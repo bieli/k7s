@@ -137,7 +137,7 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     let header = Line::from(vec![
         Span::styled(
-            " k7s ",
+            " k7s - kubernetes dashboard ",
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ),
         Span::raw("| "),
