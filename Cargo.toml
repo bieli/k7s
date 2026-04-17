@@ -12,3 +12,8 @@ keywords = ["k8s", "app", "kubernetes", "client"]
 [dependencies]
 kube = { version = "0.88", features = ["runtime", "derive"] }
 k8s-openapi = { version = "0.21", features = ["latest"] }
+
+ratatui = "0.26"
+crossterm = "0.27"
+tokio = { version = "1", features = ["full"] }
+
