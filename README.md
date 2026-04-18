@@ -40,6 +40,16 @@ or you can build binary
 cargo build --release
 ```
 
+## Simplistic way to spin up your kubernetes cluster on localhost
+
+You need to install [`kind` tool](https://kind.sigs.k8s.io/) and `docker`.
+
+All you need to do from Linux terminal is:
+```bash
+kind create cluster
+```
+
+
 ## A little bit theory about kubernetes resources - kubernetes resources overview
 
 > A practical reference guide to the most important Kubernetes resource types used in day-to-day DevOps work.
