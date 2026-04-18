@@ -5,7 +5,6 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use k8s_openapi::api::core::v1::{Namespace, Pod};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{api::ListParams, Api, Client};
 use ratatui::{
     backend::CrosstermBackend,
@@ -17,19 +16,18 @@ use ratatui::{
 };
 use std::{collections::BTreeMap, io, time::Duration, time::Instant};
 
+mod resources;
+use crate::resources::{fetch_resources, ResourceRow};
+
 const APP_HEADER_TITLE: &str = "K7s Kubernetes Resources Viewer";
 const APP_HEADER_TITLE_LEFT: &str = "--- [ ";
 const APP_HEADER_TITLE_RIGHT: &str = " ] ---";
 const APP_HEADER_TITLE_K8S_VER: &str = "| K8s API: v";
+const TICKS_DELAY: u32 = 1000;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Pane {
     Pods,
-}
-
-struct ResourceRow {
-    name: String,
-    data: Vec<String>,
 }
 
 struct App {
@@ -117,7 +115,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        if last_tick.elapsed() >= Duration::from_millis(1000) {
+        if last_tick.elapsed() >= Duration::from_millis(TICKS_DELAY.into()) {
             if let Ok(ns_list) = Api::<Namespace>::all(client.clone())
                 .list(&ListParams::default())
                 .await
@@ -126,7 +124,8 @@ async fn main() -> Result<()> {
                     .chain(ns_list.items.into_iter().filter_map(|n| n.metadata.name))
                     .collect();
                 let t = app.get_current_ns();
-                app.pods = fetch_pods(&client, &t).await;
+                // app.pods = fetch_pods(&client, &t).await;
+                app.pods = fetch_resources::<Pod>(&client, &t).await;
             }
 
             last_tick = std::time::Instant::now();
@@ -138,54 +137,6 @@ async fn main() -> Result<()> {
     terminal.show_cursor()?;
 
     Ok(())
-}
-
-async fn fetch_pods(client: &Client, ns: &Option<String>) -> Vec<ResourceRow> {
-    let api: Api<Pod> = ns.as_ref().map_or(Api::all(client.clone()), |n| {
-        Api::namespaced(client.clone(), n)
-    });
-    api.list(&ListParams::default())
-        .await
-        .map(|l| {
-            l.items
-                .into_iter()
-                .map(|p| {
-                    let status = p.status.as_ref();
-                    let ready = status
-                        .and_then(|s| s.container_statuses.as_ref())
-                        .map(|cs| format!("{}/{}", cs.iter().filter(|c| c.ready).count(), cs.len()))
-                        .unwrap_or_else(|| "0/0".into());
-                    let phase = status
-                        .and_then(|s| s.phase.clone())
-                        .unwrap_or_else(|| "Unknown".into());
-                    let restarts = status
-                        .and_then(|s| s.container_statuses.as_ref())
-                        .map(|cs| cs.iter().map(|c| c.restart_count).sum::<i32>().to_string())
-                        .unwrap_or_else(|| "0".into());
-                    ResourceRow {
-                        name: p.metadata.name.clone().unwrap_or_default(),
-                        data: vec![ready, phase, restarts, get_age(&p.metadata)],
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn get_age(meta: &ObjectMeta) -> String {
-    let now = chrono::Utc::now();
-    if let Some(creation) = meta.creation_timestamp.as_ref() {
-        let duration = now.signed_duration_since(creation.0);
-        if duration.num_days() > 0 {
-            format!("{}d", duration.num_days())
-        } else if duration.num_hours() > 0 {
-            format!("{}h", duration.num_hours())
-        } else {
-            format!("{}m", duration.num_minutes())
-        }
-    } else {
-        "-".into()
-    }
 }
 
 fn ui_header(f: &mut Frame, layout: &Rect, app: &mut App) {
