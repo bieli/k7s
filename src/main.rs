@@ -4,7 +4,10 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use k8s_openapi::api::core::v1::{Namespace, Pod};
+use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet};
+use k8s_openapi::api::batch::v1::Job;
+use k8s_openapi::api::core::v1::{Namespace, Pod, Service};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{api::ListParams, Api, Client};
 use ratatui::{
     backend::CrosstermBackend,
@@ -31,11 +34,17 @@ enum Pane {
 }
 
 struct App {
+    active_pane: Pane,
     pods: Vec<ResourceRow>,
+    services: Vec<ResourceRow>,
+    deployments: Vec<ResourceRow>,
+    replicasets: Vec<ResourceRow>,
+    daemonsets: Vec<ResourceRow>,
+    jobs: Vec<ResourceRow>,
     namespaces: Vec<String>,
     states: BTreeMap<Pane, TableState>,
-    server_version: String,
     selected_ns_index: usize,
+    server_version: String,
 }
 
 impl App {
@@ -47,11 +56,17 @@ impl App {
         states.insert(Pane::Pods, table_state);
 
         Self {
+            active_pane: Pane::Pods,
             pods: vec![],
+            services: vec![],
+            deployments: vec![],
+            replicasets: vec![],
+            daemonsets: vec![],
+            jobs: vec![],
             namespaces: vec!["ALL".to_string()],
             states,
-            server_version: "...".to_string(),
             selected_ns_index: 0,
+            server_version: "...".to_string(),
         }
     }
 
@@ -125,6 +140,11 @@ async fn main() -> Result<()> {
                     .collect();
                 let t = app.get_current_ns();
                 app.pods = fetch_resources::<Pod>(&client, &t).await;
+                app.services = fetch_resources::<Service>(&client, &t).await;
+                app.deployments = fetch_resources::<Deployment>(&client, &t).await;
+                app.replicasets = fetch_resources::<ReplicaSet>(&client, &t).await;
+                app.daemonsets = fetch_resources::<DaemonSet>(&client, &t).await;
+                app.jobs = fetch_resources::<Job>(&client, &t).await;
             }
 
             last_tick = std::time::Instant::now();
