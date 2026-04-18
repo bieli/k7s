@@ -1,21 +1,20 @@
-use std::{io, time::Duration, time::Instant, collections::BTreeMap};
-//use tokio::time::Instant;
+use std::{collections::BTreeMap, io, time::Duration, time::Instant};
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use k8s_openapi::api::core::v1::{Pod, Namespace};
+use k8s_openapi::api::core::v1::{Namespace, Pod};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-use kube::{Api, Client, api::ListParams};
+use kube::{api::ListParams, Api, Client};
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect, Alignment},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Span, Line},
-    widgets::{Block, Borders, Table, Row, Cell, TableState, Paragraph},
-    Terminal, Frame,
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
+    Frame, Terminal,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -47,33 +46,20 @@ impl App {
 
         Self {
             active_pane: Pane::Pods,
-            pods: vec![
-                ResourceRow {
-                    name: "nginx-7d8f9d6b7c-abc12".into(),
-                    data: vec!["Running".into(), "1/1".into(), "3d".into()],
-                },
-                ResourceRow {
-                    name: "api-server-5f76c9d8f9-xyz99".into(),
-                    data: vec!["Running".into(), "1/1".into(), "12h".into()],
-                },
-                ResourceRow {
-                    name: "db-0".into(),
-                    data: vec!["Pending".into(), "0/1".into(), "2m".into()],
-                },
-                ResourceRow {
-                    name: "worker-6c7b8d9f-ghijk".into(),
-                    data: vec!["CrashLoop".into(), "0/1".into(), "5m".into()],
-                },
-            ],
+            pods: vec![],
             namespaces: vec!["ALL".to_string()],
             states,
-            server_version: "v1.30.0".to_string(),
+            server_version: "...".to_string(),
             selected_ns_index: 0,
         }
     }
 
     fn get_current_ns(&self) -> Option<String> {
-        if self.selected_ns_index == 0 { None } else { Some(self.namespaces[self.selected_ns_index].clone()) }
+        if self.selected_ns_index == 0 {
+            None
+        } else {
+            Some(self.namespaces[self.selected_ns_index].clone())
+        }
     }
 }
 
@@ -90,6 +76,11 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+
+    if let Ok(v) = client.apiserver_version().await {
+        app.server_version = format!("{}.{}", v.major, v.minor);
+    }
+
     let mut last_tick = Instant::now();
 
     loop {
@@ -122,17 +113,21 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        
+
         if last_tick.elapsed() >= Duration::from_millis(1000) {
-            if let Ok(ns_list) = Api::<Namespace>::all(client.clone()).list(&ListParams::default()).await {
+            if let Ok(ns_list) = Api::<Namespace>::all(client.clone())
+                .list(&ListParams::default())
+                .await
+            {
                 app.namespaces = std::iter::once("ALL".to_string())
-                    .chain(ns_list.items.into_iter().filter_map(|n| n.metadata.name)).collect();
+                    .chain(ns_list.items.into_iter().filter_map(|n| n.metadata.name))
+                    .collect();
+                let t = app.get_current_ns();
+                app.pods = fetch_pods(&client, &t).await;
             }
 
-            let t = app.get_current_ns();
             last_tick = std::time::Instant::now();
         }
-
     }
 
     disable_raw_mode()?;
@@ -143,24 +138,51 @@ async fn main() -> Result<()> {
 }
 
 async fn fetch_pods(client: &Client, ns: &Option<String>) -> Vec<ResourceRow> {
-    let api: Api<Pod> = ns.as_ref().map_or(Api::all(client.clone()), |n| Api::namespaced(client.clone(), n));
-    api.list(&ListParams::default()).await.map(|l| l.items.into_iter().map(|p| {
-        let status = p.status.as_ref();
-        let ready = status.and_then(|s| s.container_statuses.as_ref()).map(|cs| format!("{}/{}", cs.iter().filter(|c| c.ready).count(), cs.len())).unwrap_or_else(|| "0/0".into());
-        let phase = status.and_then(|s| s.phase.clone()).unwrap_or_else(|| "Unknown".into());
-        let restarts = status.and_then(|s| s.container_statuses.as_ref()).map(|cs| cs.iter().map(|c| c.restart_count).sum::<i32>().to_string()).unwrap_or_else(|| "0".into());
-        ResourceRow { name: p.metadata.name.clone().unwrap_or_default(), data: vec![ready, phase, restarts, get_age(&p.metadata)] }
-    }).collect()).unwrap_or_default()
+    let api: Api<Pod> = ns.as_ref().map_or(Api::all(client.clone()), |n| {
+        Api::namespaced(client.clone(), n)
+    });
+    api.list(&ListParams::default())
+        .await
+        .map(|l| {
+            l.items
+                .into_iter()
+                .map(|p| {
+                    let status = p.status.as_ref();
+                    let ready = status
+                        .and_then(|s| s.container_statuses.as_ref())
+                        .map(|cs| format!("{}/{}", cs.iter().filter(|c| c.ready).count(), cs.len()))
+                        .unwrap_or_else(|| "0/0".into());
+                    let phase = status
+                        .and_then(|s| s.phase.clone())
+                        .unwrap_or_else(|| "Unknown".into());
+                    let restarts = status
+                        .and_then(|s| s.container_statuses.as_ref())
+                        .map(|cs| cs.iter().map(|c| c.restart_count).sum::<i32>().to_string())
+                        .unwrap_or_else(|| "0".into());
+                    ResourceRow {
+                        name: p.metadata.name.clone().unwrap_or_default(),
+                        data: vec![ready, phase, restarts, get_age(&p.metadata)],
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn get_age(meta: &ObjectMeta) -> String {
     let now = chrono::Utc::now();
     if let Some(creation) = meta.creation_timestamp.as_ref() {
         let duration = now.signed_duration_since(creation.0);
-        if duration.num_days() > 0 { format!("{}d", duration.num_days()) }
-        else if duration.num_hours() > 0 { format!("{}h", duration.num_hours()) }
-        else { format!("{}m", duration.num_minutes()) }
-    } else { "-".into() }
+        if duration.num_days() > 0 {
+            format!("{}d", duration.num_days())
+        } else if duration.num_hours() > 0 {
+            format!("{}h", duration.num_hours())
+        } else {
+            format!("{}m", duration.num_minutes())
+        }
+    } else {
+        "-".into()
+    }
 }
 
 fn ui(f: &mut Frame, app: &mut App) {
@@ -169,21 +191,15 @@ fn ui(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(1),
             Constraint::Length(3),
-            Constraint::Min(0)
+            Constraint::Min(0),
         ])
         .split(f.size());
 
-    let header_text_left = format!(
-        "--- [ "
-    );
+    let header_text_left = format!("--- [ ");
 
-    let header_text_mid = format!(
-        "K7s Kubernetes Resources Viewer"
-    );
+    let header_text_mid = format!("K7s Kubernetes Resources Viewer");
 
-    let header_text_right = format!(
-        " ] ---"
-    );
+    let header_text_right = format!(" ] ---");
 
     let header_paragraph = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -197,7 +213,7 @@ fn ui(f: &mut Frame, app: &mut App) {
             Style::default().fg(Color::Yellow),
         ),
         Span::styled(
-            format!(" | K8s API: {}", app.server_version),
+            format!("| K8s API: v{}", app.server_version),
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
@@ -211,12 +227,30 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     f.render_widget(header_paragraph, layout[0]);
 
-    let ns_spans: Vec<Span> = app.namespaces.iter().enumerate().map(|(i, n)| {
-        let s = if i == app.selected_ns_index { Style::default().fg(Color::Green).add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::White) };
-        Span::styled(format!("[{}] {}  ", i, n), s)
-    }).collect();
-    f.render_widget(Paragraph::new(Line::from(ns_spans)).block(Block::default().title(" Namespaces (0-9) ").borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow))), layout[1]);
-
+    let ns_spans: Vec<Span> = app
+        .namespaces
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let s = if i == app.selected_ns_index {
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Span::styled(format!("[{}] {}  ", i, n), s)
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(Line::from(ns_spans)).block(
+            Block::default()
+                .title(" Namespaces (0-9) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow)),
+        ),
+        layout[1],
+    );
 
     let rows: Vec<Row> = app
         .pods
@@ -241,10 +275,7 @@ fn ui(f: &mut Frame, app: &mut App) {
         ],
     )
     .header(
-        Row::new(vec!["Name", "Status", "Ready", "Age"]).style(
-            Style::default()
-                .fg(Color::Blue),
-        ),
+        Row::new(vec!["Name", "Status", "Ready", "Age"]).style(Style::default().fg(Color::Blue)),
     )
     .block(Block::default().title("Pods").borders(Borders::ALL))
     .highlight_style(Style::default().bg(Color::Blue));
