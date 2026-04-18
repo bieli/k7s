@@ -2,7 +2,7 @@ use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet};
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{Namespace, Pod, Service};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-use k8s_openapi::NamespaceResourceScope;
+use k8s_openapi::{ClusterResourceScope, NamespaceResourceScope};
 use kube::{api::ListParams, Api, Client, Resource};
 use serde::de::DeserializeOwned;
 use std::fmt::Debug;
@@ -31,6 +31,28 @@ where
     });
 
     api.list(&ListParams::default())
+        .await
+        .map(|l| {
+            l.items
+                .into_iter()
+                .map(|item| item.into_resource_row())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub async fn fetch_cluster_resources<K>(client: &Client) -> Vec<ResourceRow>
+where
+    K: Resource<Scope = ClusterResourceScope>
+        + Clone
+        + Debug
+        + DeserializeOwned
+        + IntoResourceRow
+        + 'static,
+    K::DynamicType: Default,
+{
+    Api::<K>::all(client.clone())
+        .list(&ListParams::default())
         .await
         .map(|l| {
             l.items
