@@ -7,13 +7,16 @@ use crossterm::{
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet};
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{Namespace, Pod, Service};
-use kube::{Client};
+use kube::Client;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
+    widgets::{
+        Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Table, TableState, Wrap,
+    },
     Frame, Terminal,
 };
 use std::{collections::BTreeMap, io, time::Duration, time::Instant};
@@ -140,6 +143,62 @@ const PANE_CONFIGS: &[PaneConfig] = &[
     },
 ];
 
+struct DetailModal {
+    title: String,
+    lines: Vec<String>,
+    scroll: usize,
+}
+
+impl DetailModal {
+    fn from_row(row: &ResourceRow, pane_title: &str, headers: &[&str]) -> Self {
+        let mut lines: Vec<String> = Vec::new();
+
+        lines.push("━━━ Identity ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".into());
+        lines.push(format!("  Kind  :  {}", pane_title.trim_end_matches('s')));
+        lines.push(format!("  Name  :  {}", row.name));
+        lines.push("".into());
+
+        lines.push("━━━ Details ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".into());
+        for (i, value) in row.data.iter().enumerate() {
+            let label = headers.get(i + 1).copied().unwrap_or("—");
+            lines.push(format!("  {:<14}  {}", label, value));
+        }
+        lines.push("".into());
+
+        lines.push("━━━ Hints ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".into());
+        lines.push(format!(
+            "  kubectl describe {} {}",
+            pane_title.to_lowercase().trim_end_matches('s'),
+            row.name
+        ));
+        lines.push(format!(
+            "  kubectl get {} {} -o yaml",
+            pane_title.to_lowercase().trim_end_matches('s'),
+            row.name
+        ));
+        lines.push("".into());
+        lines.push("  Press  Esc / q  to close this panel.".into());
+        lines.push("  Use  ↑ / ↓  to scroll.".into());
+
+        Self {
+            title: format!(" ✦ {} — {} ", pane_title, row.name),
+            lines,
+            scroll: 0,
+        }
+    }
+
+    fn scroll_down(&mut self, max_visible: usize) {
+        let max = self.lines.len().saturating_sub(max_visible);
+        if self.scroll < max {
+            self.scroll += 1;
+        }
+    }
+
+    fn scroll_up(&mut self) {
+        self.scroll = self.scroll.saturating_sub(1);
+    }
+}
+
 struct App {
     active_pane: Pane,
     rows: BTreeMap<Pane, Vec<ResourceRow>>,
@@ -147,6 +206,7 @@ struct App {
     states: BTreeMap<Pane, TableState>,
     selected_ns_index: usize,
     server_version: String,
+    detail: Option<DetailModal>,
 }
 
 impl App {
@@ -168,6 +228,7 @@ impl App {
             states,
             selected_ns_index: 0,
             server_version: "...".to_string(),
+            detail: None,
         }
     }
 
@@ -181,6 +242,22 @@ impl App {
 
     fn active_rows_len(&self) -> usize {
         self.rows.get(&self.active_pane).map_or(0, |v| v.len())
+    }
+
+    fn open_detail(&mut self) {
+        let pane = self.active_pane;
+        let cfg = PANE_CONFIGS.iter().find(|c| c.pane == pane).unwrap();
+        let rows = match self.rows.get(&pane) {
+            Some(r) => r,
+            None => return,
+        };
+        let idx = match self.states.get(&pane).and_then(|s| s.selected()) {
+            Some(i) => i,
+            None => return,
+        };
+        if let Some(row) = rows.get(idx) {
+            self.detail = Some(DetailModal::from_row(row, cfg.title, cfg.headers));
+        }
     }
 }
 
@@ -208,8 +285,30 @@ async fn main() -> Result<()> {
         let timeout = Duration::from_millis(100);
         if event::poll(timeout.saturating_sub(last_tick.elapsed()))? {
             if let Event::Key(key) = event::read()? {
+                if app.detail.is_some() {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                            app.detail = None;
+                        }
+                        KeyCode::Down => {
+                            if let Some(d) = app.detail.as_mut() {
+                                d.scroll_down(40);
+                            }
+                        }
+                        KeyCode::Up => {
+                            if let Some(d) = app.detail.as_mut() {
+                                d.scroll_up();
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 match key.code {
                     KeyCode::Char('q') => break,
+
+                    KeyCode::Enter => app.open_detail(),
 
                     KeyCode::Tab => {
                         let idx = Pane::all()
@@ -385,6 +484,109 @@ fn ui(f: &mut Frame, app: &mut App) {
             cfg.constraints,
         );
     }
+
+    if let Some(detail) = &mut app.detail {
+        ui_render_detail(f, detail);
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+fn ui_render_detail(f: &mut Frame, detail: &mut DetailModal) {
+    let area = centered_rect(80, 80, f.size());
+    let inner_h = area.height.saturating_sub(2) as usize;
+
+    let max_scroll = detail.lines.len().saturating_sub(inner_h);
+    if detail.scroll > max_scroll {
+        detail.scroll = max_scroll;
+    }
+
+    let visible: Vec<Line> = detail
+        .lines
+        .iter()
+        .skip(detail.scroll)
+        .take(inner_h)
+        .map(|l| {
+            if l.starts_with("━━━") {
+                Line::from(Span::styled(
+                    l.clone(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else if l.trim_start().starts_with("kubectl") {
+                Line::from(Span::styled(l.clone(), Style::default().fg(Color::Yellow)))
+            } else if l.trim_start().starts_with("Press") || l.trim_start().starts_with("Use") {
+                Line::from(Span::styled(
+                    l.clone(),
+                    Style::default().fg(Color::DarkGray),
+                ))
+            } else {
+                let parts: Vec<&str> = l.splitn(2, "  ").collect();
+                if parts.len() == 2 {
+                    Line::from(vec![
+                        Span::styled(format!("{:}", parts[0]), Style::default().fg(Color::Blue)),
+                        Span::raw("  "),
+                        Span::styled(parts[1].to_string(), Style::default().fg(Color::White)),
+                    ])
+                } else {
+                    Line::from(l.clone())
+                }
+            }
+        })
+        .collect();
+
+    let mut scrollbar_state = ScrollbarState::new(detail.lines.len()).position(detail.scroll);
+
+    f.render_widget(Clear, area);
+
+    let scroll_hint = if detail.lines.len() > inner_h {
+        format!(" [{}/{}] ", detail.scroll + 1, max_scroll + 1)
+    } else {
+        String::new()
+    };
+
+    let paragraph = Paragraph::new(visible)
+        .block(
+            Block::default()
+                .title(Span::styled(
+                    format!("{}{}", detail.title, scroll_hint),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Green)),
+        )
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
+
+    f.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓")),
+        area,
+        &mut scrollbar_state,
+    );
 }
 
 fn ui_render_table(
