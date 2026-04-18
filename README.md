@@ -61,7 +61,7 @@ Do you wish to continue? [yes]/no yes
  INFO Cargo finished successfully
  INFO Done in 112.487616926s
 ```
-You can open new terminal window and put directly `k7s` and it works!
+You can open new terminal window and put directly `/home/$USER/.cargo/bin/k7s` and it works!
 
 ### Compile and run - for developers
 
@@ -202,10 +202,10 @@ Cluster
 - [x] update details view to this similar from `kubectl describe ...`
 - [ ] add unit tests and fix quality CI in Github Actions
 - [ ] add cluster perspective with generic groups of panels + easy switch between
+- [ ] add `+ / -` buttons on cluster perspective (prev point.) view to add/remove panels for main start app. view & save settings in user file, when user open again tool, it will be configured to user prefered panels on start screen
 - [ ] add `--edit | -e` mode to app. line args. - to enable editable mode (will be very usefull for `CKAD exam`, when you could use this `k7s` tool, when changes are required inside 99% of tasks instead of clicking (time of reaction on changes is one imprtant measure in `CKAD exam`)!)
 - [ ] colors schemas like in `btop`, becouse real engineers, who have been using terminal and other geeks, would like to change colors
 - [ ] instead of pulling, listining events from kubernetes cluster and propagate on UI panels, depends on events
 - [ ] add bash script one liner to easy install binary for everyone
 - [ ] add releases with ready to use binaries for multiple hardware architectures of Linux/*NIX OS
-- [ ] listinin Open Source community, what they want
-
+- [ ] listining Open Source community, what they want
