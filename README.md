@@ -36,8 +36,34 @@ Based on kube config file, internal K8s API client can "speak" with your kuberne
 ```bash
 export KUBECONFIG=/home/$USER/.kube/config
 ```
+### Install k7s inside your OS
 
-### Compile and run
+You need to install `cargo-binstall` tool first (it compiling project from RUST official codes repository!):
+- https://github.com/cargo-bins/cargo-binstall
+- next call like this, and agreed with `yes` in installation step
+
+```bash
+$ /home/$USER/.cargo/bin/cargo-binstall k7s
+ INFO resolve: Resolving package: 'k7s'
+ ...
+ WARN The package k7s v0.4.0 will be installed from source (with cargo)
+Do you wish to continue? [yes]/no yes
+    Updating crates.io index
+  Downloaded k7s v0.4.0
+  Downloaded 1 crate (325.8KiB) in 0.35s
+  Installing k7s v0.4.0
+      ...
+      Compiling kube v0.88.1
+   Compiling k7s v0.4.0
+    Finished `release` profile [optimized] target(s) in 1m 13s
+  Installing /home/bieli/.cargo/bin/k7s
+   Installed package `k7s v0.4.0` (executable `k7s`)
+ INFO Cargo finished successfully
+ INFO Done in 112.487616926s
+```
+You can open new terminal window and put directly `k7s` and it works!
+
+### Compile and run - for developers
 
 ```bash
 cargo run --release
