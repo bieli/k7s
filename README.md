@@ -13,7 +13,7 @@ RUST thin kubectl replacer and maybe k9s in next iterations ;-) Let's dance!
 ╚═╝  ╚═╝   ╚═╝  ╚════╝
 ```
 
-## First ALPHA version view - terminal UI
+## Main view of k7s tool with terminal UI
 
 ![](https://raw.githubusercontent.com/bieli/k7s/main/assets/screenshot_03.v0.3.0-alpha.png)
 
