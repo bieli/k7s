@@ -5,19 +5,17 @@ use std::time::{Duration, Instant};
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
-    terminal::{
-        disable_raw_mode, enable_raw_mode,
-        EnterAlternateScreen, LeaveAlternateScreen,
-    },
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
+    prelude::Alignment,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Table, Row, Cell, TableState, Block, Borders},
-    Terminal, Frame,
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
+    Frame, Terminal,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -129,34 +127,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn ui(f: &mut Frame, app: &mut App) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(f.size());
 
-    let header = Line::from(vec![
+    let header_text_left = format!(
+        "--- [ "
+    );
+
+    let header_text_mid = format!(
+        "K7s Kubernetes Resources Reviewer"
+    );
+
+    let header_text_right = format!(
+        " ] ---"
+    );
+
+    let header_paragraph = Paragraph::new(Line::from(vec![
         Span::styled(
-            " k7s - kubernetes dashboard ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            header_text_left,
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
         ),
-        Span::raw("| "),
         Span::styled(
-            format!("K8s API: {}", app.server_version),
+            format!(" {} ", header_text_mid),
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            format!(" | K8s API: {}", app.server_version),
             Style::default().fg(Color::DarkGray),
         ),
-    ]);
+        Span::styled(
+            header_text_right,
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
+        ),
+    ]))
+    .alignment(Alignment::Center);
 
-    f.render_widget(Paragraph::new(header), layout[0]);
+    f.render_widget(header_paragraph, layout[0]);
 
-    let rows: Vec<Row> = app.pods.iter().map(|p| {
-        Row::new(vec![
-            Cell::from(p.name.clone()),
-            Cell::from(p.data[0].clone()),
-            Cell::from(p.data[1].clone()),
-            Cell::from(p.data[2].clone()),
-        ])
-    }).collect();
+    let rows: Vec<Row> = app
+        .pods
+        .iter()
+        .map(|p| {
+            Row::new(vec![
+                Cell::from(p.name.clone()),
+                Cell::from(p.data[0].clone()),
+                Cell::from(p.data[1].clone()),
+                Cell::from(p.data[2].clone()),
+            ])
+        })
+        .collect();
 
     let table = Table::new(
         rows,
@@ -168,8 +191,10 @@ fn ui(f: &mut Frame, app: &mut App) {
         ],
     )
     .header(
-        Row::new(vec!["Name", "Status", "Ready", "Age"])
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Row::new(vec!["Name", "Status", "Ready", "Age"]).style(
+            Style::default()
+                .fg(Color::Blue),
+        ),
     )
     .block(Block::default().title("Pods").borders(Borders::ALL))
     .highlight_style(Style::default().bg(Color::Blue));
