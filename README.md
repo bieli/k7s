@@ -15,7 +15,7 @@ RUST thin kubectl replacer and maybe k9s in next iterations ;-) Let's dance!
 
 ## First ALPHA version view - terminal UI
 
-![](https://raw.githubusercontent.com/bieli/k7s/main/assets/screenshot_02.v0.1.0-alpha.png)
+![](https://raw.githubusercontent.com/bieli/k7s/main/assets/screenshot_03.v0.3.0-alpha.png)
 
 
 ## How to run this app.?
