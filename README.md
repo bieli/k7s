@@ -39,6 +39,9 @@ export KUBECONFIG=/home/$USER/.kube/config
 ### Install k7s inside your OS
 
 You need to have `cargo` - RUST programming language ecosystem base tool (multiplatform)
+
+Here you can read about [multiplatform support by RUST language](https://xampprocky.github.io/rust-forge/release/platform-support.html)
+
 ```bash
 apt-get install rustup
 rustup default stable
