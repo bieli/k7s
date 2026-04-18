@@ -1,3 +1,6 @@
+![github_tag](https://img.shields.io/github/v/tag/bieli/k7s)
+[![Crates.io](https://img.shields.io/crates/v/k7s.svg)](https://crates.io/crates/k7s)
+
 # k7s
 Kubernetes Resources Viewer - RUST thin kubectl replacer and maybe k9s in next iterations ;-) Let's dance!
 
