@@ -190,15 +190,7 @@ fn get_age(meta: &ObjectMeta) -> String {
     }
 }
 
-fn ui(f: &mut Frame, app: &mut App) {
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Min(0),
-        ])
-        .split(f.size());
+fn ui_header(f: &mut Frame, layout: &Rect, app: &mut App) {
 
     let header_paragraph = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -224,7 +216,20 @@ fn ui(f: &mut Frame, app: &mut App) {
     ]))
     .alignment(Alignment::Center);
 
-    f.render_widget(header_paragraph, layout[0]);
+    f.render_widget(header_paragraph, *layout);
+}
+
+fn ui(f: &mut Frame, app: &mut App) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
+        .split(f.size());
+
+    ui_header(f, &layout[0], app);
 
     let ns_spans: Vec<Span> = app
         .namespaces
