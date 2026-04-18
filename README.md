@@ -43,7 +43,8 @@ You need to have `cargo` - RUST programming language ecosystem base tool (multip
 Here you can read about [multiplatform support by RUST language](https://xampprocky.github.io/rust-forge/release/platform-support.html)
 
 ```bash
-apt-get install rustup
+sudo apt update
+sudo apt install build-essential rustup -y
 rustup default stable
 ```
 
