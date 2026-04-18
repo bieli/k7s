@@ -38,6 +38,12 @@ export KUBECONFIG=/home/$USER/.kube/config
 ```
 ### Install k7s inside your OS
 
+You need to have `cargo` - RUST programming language ecosystem base tool (multiplatform)
+```bash
+apt-get install rustup
+rustup default stable
+```
+
 You need to install `cargo-binstall` tool first (it compiling project from RUST official codes repository!):
 - https://github.com/cargo-bins/cargo-binstall
 - next call like this, and agreed with `yes` in installation step
