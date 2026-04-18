@@ -18,7 +18,13 @@ RUST thin kubectl replacer and maybe k9s in next iterations ;-) Let's dance!
 ![](https://raw.githubusercontent.com/bieli/k7s/main/assets/screenshot_03.v0.3.0-alpha.png)
 
 
-## How to run this app.?
+## How to use k7s app.?
+
+- you can use `Tab` key to go into next resource and `Shift+Tab` to move to prev. one
+- you can switch between namespaces with keys from `0` to `9` (default start view contains all resources from all namespaces)
+
+
+## How to run k7s  app.?
 
 ### Setup kube config env.
 
