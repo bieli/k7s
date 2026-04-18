@@ -17,6 +17,11 @@ use ratatui::{
     Frame, Terminal,
 };
 
+const APP_HEADER_TITLE : &str = "K7s Kubernetes Resources Viewer";
+const APP_HEADER_TITLE_LEFT : &str = "--- [ ";
+const APP_HEADER_TITLE_RIGHT : &str = " ] ---";
+const APP_HEADER_TITLE_K8S_VER : &str = "| K8s API: v";
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Pane {
     Pods,
@@ -195,29 +200,23 @@ fn ui(f: &mut Frame, app: &mut App) {
         ])
         .split(f.size());
 
-    let header_text_left = format!("--- [ ");
-
-    let header_text_mid = format!("K7s Kubernetes Resources Viewer");
-
-    let header_text_right = format!(" ] ---");
-
     let header_paragraph = Paragraph::new(Line::from(vec![
         Span::styled(
-            header_text_left,
+            APP_HEADER_TITLE_LEFT,
             Style::default()
                 .add_modifier(Modifier::BOLD)
                 .fg(Color::Cyan),
         ),
         Span::styled(
-            format!(" {} ", header_text_mid),
+            format!(" {} ", APP_HEADER_TITLE),
             Style::default().fg(Color::Yellow),
         ),
         Span::styled(
-            format!("| K8s API: v{}", app.server_version),
+            format!("{}{}", APP_HEADER_TITLE_K8S_VER, app.server_version),
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
-            header_text_right,
+            APP_HEADER_TITLE_RIGHT,
             Style::default()
                 .add_modifier(Modifier::BOLD)
                 .fg(Color::Cyan),
