@@ -33,7 +33,6 @@ struct ResourceRow {
 }
 
 struct App {
-    active_pane: Pane,
     pods: Vec<ResourceRow>,
     namespaces: Vec<String>,
     states: BTreeMap<Pane, TableState>,
@@ -50,7 +49,6 @@ impl App {
         states.insert(Pane::Pods, table_state);
 
         Self {
-            active_pane: Pane::Pods,
             pods: vec![],
             namespaces: vec!["ALL".to_string()],
             states,
@@ -191,7 +189,6 @@ fn get_age(meta: &ObjectMeta) -> String {
 }
 
 fn ui_header(f: &mut Frame, layout: &Rect, app: &mut App) {
-
     let header_paragraph = Paragraph::new(Line::from(vec![
         Span::styled(
             APP_HEADER_TITLE_LEFT,
