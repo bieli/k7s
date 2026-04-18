@@ -46,6 +46,9 @@ rustup default stable
 
 You need to install `cargo-binstall` tool first (it compiling project from RUST official codes repository!):
 - https://github.com/cargo-bins/cargo-binstall
+```bash
+$ curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+```
 - next call like this, and agreed with `yes` in installation step
 
 ```bash
