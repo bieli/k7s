@@ -15,8 +15,11 @@ RUST thin kubectl replacer and maybe k9s in next iterations ;-) Let's dance!
 
 ## Main view of k7s tool with terminal UI
 
+### k7s start view
 ![](https://raw.githubusercontent.com/bieli/k7s/main/assets/screenshot_03.v0.3.0-alpha.png)
 
+### k7s selected kubernetes resource details view
+![](https://raw.githubusercontent.com/bieli/k7s/main/assets/k7s__screenshot_resources_details__v0.4.0.png)
 
 ## How to use k7s app.?
 
