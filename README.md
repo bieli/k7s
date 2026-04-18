@@ -69,6 +69,13 @@ Do you wish to continue? [yes]/no yes
 ```
 You can open new terminal window and put directly `/home/$USER/.cargo/bin/k7s` and it works!
 
+### Cleanup Cargo tool after installation
+
+```bash
+cp /home/$USER/.cargo/bin/k7s /usr/bin
+apt-get purge rustup
+```
+
 ### Compile and run - for developers
 
 ```bash
