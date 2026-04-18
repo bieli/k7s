@@ -170,8 +170,8 @@ Cluster
 
 ## TODO list
 
+- [x] update details view to this similar from `kubectl describe ...`
 - [ ] add unit tests and fix quality CI in Github Actions
-- [ ] update details view to this similar from `kubectl describe ...`
 - [ ] add cluster perspective with generic groups of panels + easy switch between
 - [ ] add `--edit | -e` mode to app. line args. - to enable editable mode (will be very usefull for `CKAD exam`, when you could use this `k7s` tool, when changes are required inside 99% of tasks instead of clicking (time of reaction on changes is one imprtant measure in `CKAD exam`)!)
 - [ ] colors schemas like in `btop`, becouse real engineers, who have been using terminal and other geeks, would like to change colors
