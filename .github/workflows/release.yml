@@ -25,6 +25,8 @@ jobs:
           - { os: ubuntu-latest, target: armv6-unknown-freebsd, use_cross: true }
           - { os: ubuntu-latest, target: x86_64-unknown-netbsd, use_cross: true }
           - { os: ubuntu-latest, target: x86_64-unknown-openbsd, use_cross: true }
+          # MacOS
+          - { os: macos-latest, target: x86_64-apple-darwin, use_cross: false }
           # M$
           - { os: windows-latest, target: i686-pc-windows-gnu, use_cross: false }
           - { os: windows-latest, target: x86_64-pc-windows-gnu, use_cross: false }
