@@ -1,4 +1,3 @@
-use std::{collections::BTreeMap, io, time::Duration, time::Instant};
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -16,11 +15,12 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
     Frame, Terminal,
 };
+use std::{collections::BTreeMap, io, time::Duration, time::Instant};
 
-const APP_HEADER_TITLE : &str = "K7s Kubernetes Resources Viewer";
-const APP_HEADER_TITLE_LEFT : &str = "--- [ ";
-const APP_HEADER_TITLE_RIGHT : &str = " ] ---";
-const APP_HEADER_TITLE_K8S_VER : &str = "| K8s API: v";
+const APP_HEADER_TITLE: &str = "K7s Kubernetes Resources Viewer";
+const APP_HEADER_TITLE_LEFT: &str = "--- [ ";
+const APP_HEADER_TITLE_RIGHT: &str = " ] ---";
+const APP_HEADER_TITLE_K8S_VER: &str = "| K8s API: v";
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Pane {
