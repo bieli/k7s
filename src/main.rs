@@ -7,7 +7,7 @@ use crossterm::{
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet};
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{Namespace, Pod, Service};
-use kube::Client;
+use kube::{Api, Client};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -143,59 +143,1080 @@ const PANE_CONFIGS: &[PaneConfig] = &[
     },
 ];
 
+fn opt_str(v: &Option<String>) -> &str {
+    v.as_deref().unwrap_or("<none>")
+}
+
+fn labels_str(m: Option<&BTreeMap<String, String>>) -> String {
+    match m {
+        None => "<none>".into(),
+        Some(map) if map.is_empty() => "<none>".into(),
+        Some(map) => map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("  "),
+    }
+}
+
+fn section(lines: &mut Vec<String>, title: &str) {
+    lines.push("".into());
+    lines.push(format!(
+        "━━━ {} {}",
+        title,
+        "━".repeat(54_usize.saturating_sub(title.len()))
+    ));
+}
+
+fn field(lines: &mut Vec<String>, label: &str, value: &str) {
+    lines.push(format!("  {:<28}  {}", label, value));
+}
+
+fn int_or_str(v: &k8s_openapi::apimachinery::pkg::util::intstr::IntOrString) -> String {
+    match v {
+        k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(n) => n.to_string(),
+        k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::String(s) => s.clone(),
+    }
+}
+
+fn annotations_lines(
+    lines: &mut Vec<String>,
+    label: &str,
+    anns: Option<&std::collections::BTreeMap<String, String>>,
+) {
+    const SKIP: &str = "kubectl.kubernetes.io/last-applied-configuration";
+    match anns {
+        None => field(lines, label, "<none>"),
+        Some(map) => {
+            let visible: Vec<_> = map.iter().filter(|(k, _)| k.as_str() != SKIP).collect();
+            if visible.is_empty() {
+                field(lines, label, "<none>");
+            } else {
+                for (i, (k, v)) in visible.iter().enumerate() {
+                    if i == 0 {
+                        field(lines, label, &format!("{}: {}", k, v));
+                    } else {
+                        lines.push(format!("  {:<28}  {}: {}", "", k, v));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn multiline_labels(
+    lines: &mut Vec<String>,
+    label: &str,
+    map: Option<&std::collections::BTreeMap<String, String>>,
+) {
+    match map {
+        None => field(lines, label, "<none>"),
+        Some(m) if m.is_empty() => field(lines, label, "<none>"),
+        Some(m) => {
+            let pairs: Vec<String> = m.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+            field(lines, label, &pairs[0]);
+            for p in &pairs[1..] {
+                lines.push(format!("  {:<28}  {}", "", p));
+            }
+        }
+    }
+}
+
+fn probe_str(p: &k8s_openapi::api::core::v1::Probe) -> String {
+    use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
+    let action = if let Some(h) = &p.http_get {
+        let port = match &h.port {
+            IntOrString::Int(n) => n.to_string(),
+            IntOrString::String(s) => s.clone(),
+        };
+        format!(
+            "http-get {}:{}{}",
+            h.scheme.as_deref().unwrap_or("HTTP").to_lowercase(),
+            port,
+            h.path.as_deref().unwrap_or("/")
+        )
+    } else if let Some(e) = &p.exec {
+        format!(
+            "exec {}",
+            e.command.as_ref().map(|c| c.join(" ")).unwrap_or_default()
+        )
+    } else if let Some(t) = &p.tcp_socket {
+        format!("tcp-socket :{:?}", t.port)
+    } else {
+        "unknown".into()
+    };
+    format!(
+        "{} delay={}s timeout={}s period={}s #success={} #failure={}",
+        action,
+        p.initial_delay_seconds.unwrap_or(0),
+        p.timeout_seconds.unwrap_or(1),
+        p.period_seconds.unwrap_or(10),
+        p.success_threshold.unwrap_or(1),
+        p.failure_threshold.unwrap_or(3),
+    )
+}
+
+fn env_var_value(ev: &k8s_openapi::api::core::v1::EnvVar) -> String {
+    if let Some(v) = &ev.value {
+        return v.clone();
+    }
+    if let Some(vf) = &ev.value_from {
+        if let Some(fr) = &vf.field_ref {
+            return format!("({})", fr.field_path);
+        }
+        if let Some(sr) = &vf.secret_key_ref {
+            return format!("secret:{}/{}", sr.name.as_deref().unwrap_or("?"), sr.key);
+        }
+        if let Some(cr) = &vf.config_map_key_ref {
+            return format!("configmap:{}/{}", cr.name.as_deref().unwrap_or("?"), cr.key);
+        }
+    }
+    "<none>".into()
+}
+
+fn toleration_str(t: &k8s_openapi::api::core::v1::Toleration) -> String {
+    let key = t.key.as_deref().unwrap_or("*");
+    let op = t.operator.as_deref().unwrap_or("Equal");
+    let effect = t.effect.as_deref().unwrap_or("");
+    if let Some(val) = &t.value {
+        format!("{}={}: {}", key, val, effect)
+    } else {
+        format!("{}:{} ({})", key, effect, op)
+    }
+}
+
+async fn describe_deployment(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
+    let api: Api<Deployment> = match ns {
+        Some(n) => Api::namespaced(client.clone(), n),
+        None => Api::all(client.clone()),
+    };
+    let mut lines = Vec::new();
+
+    let d = match api.get(name).await {
+        Ok(d) => d,
+        Err(e) => {
+            lines.push(format!("  Error fetching Deployment '{}': {}", name, e));
+            return lines;
+        }
+    };
+
+    let meta = &d.metadata;
+    let spec = d.spec.as_ref();
+    let status = d.status.as_ref();
+
+    section(&mut lines, "Identity");
+    field(&mut lines, "Name", opt_str(&meta.name));
+    field(&mut lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        &mut lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
+    annotations_lines(&mut lines, "Annotations", meta.annotations.as_ref());
+
+    section(&mut lines, "Spec");
+    if let Some(s) = spec {
+        multiline_labels(&mut lines, "Selector", s.selector.match_labels.as_ref());
+
+        let desired = s.replicas.unwrap_or(1);
+        let updated = status.and_then(|st| st.updated_replicas).unwrap_or(0);
+        let total = status.and_then(|st| st.replicas).unwrap_or(0);
+        let available = status.and_then(|st| st.available_replicas).unwrap_or(0);
+        let unavailable = status.and_then(|st| st.unavailable_replicas).unwrap_or(0);
+        field(
+            &mut lines,
+            "Replicas",
+            &format!(
+                "{} desired | {} updated | {} total | {} available | {} unavailable",
+                desired, updated, total, available, unavailable
+            ),
+        );
+
+        if let Some(strategy) = &s.strategy {
+            field(
+                &mut lines,
+                "StrategyType",
+                strategy.type_.as_deref().unwrap_or("<none>"),
+            );
+            if let Some(ru) = &strategy.rolling_update {
+                let max_un = ru
+                    .max_unavailable
+                    .as_ref()
+                    .map(int_or_str)
+                    .unwrap_or_else(|| "25%".into());
+                let max_sur = ru
+                    .max_surge
+                    .as_ref()
+                    .map(int_or_str)
+                    .unwrap_or_else(|| "25%".into());
+                field(
+                    &mut lines,
+                    "RollingUpdateStrategy",
+                    &format!("{} max unavailable, {} max surge", max_un, max_sur),
+                );
+            }
+        }
+        field(
+            &mut lines,
+            "MinReadySeconds",
+            &s.min_ready_seconds.unwrap_or(0).to_string(),
+        );
+    }
+
+    section(&mut lines, "Pod Template");
+    if let Some(s) = spec {
+        multiline_labels(
+            &mut lines,
+            "  Labels",
+            s.template.metadata.as_ref().and_then(|m| m.labels.as_ref()),
+        );
+
+        if let Some(pod_spec) = &s.template.spec {
+            field(
+                &mut lines,
+                "  ServiceAccount",
+                pod_spec.service_account_name.as_deref().unwrap_or("<none>"),
+            );
+
+            for c in &pod_spec.containers {
+                lines.push(format!("  Container: {}", c.name));
+                field(
+                    &mut lines,
+                    "    Image",
+                    c.image.as_deref().unwrap_or("<none>"),
+                );
+
+                let ports = c
+                    .ports
+                    .as_ref()
+                    .map(|ps| {
+                        ps.iter()
+                            .map(|p| {
+                                let proto = p.protocol.as_deref().unwrap_or("TCP");
+                                match p.name.as_deref() {
+                                    Some(n) => format!("{}/{} ({})", p.container_port, proto, n),
+                                    None => format!("{}/{}", p.container_port, proto),
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_else(|| "<none>".into());
+                field(&mut lines, "    Ports", &ports);
+
+                if let Some(args) = &c.args {
+                    if !args.is_empty() {
+                        field(&mut lines, "    Args", &args[0]);
+                        for a in &args[1..] {
+                            lines.push(format!("  {:<28}  {}", "", a));
+                        }
+                    }
+                }
+
+                if let Some(env) = &c.env {
+                    if !env.is_empty() {
+                        let first = &env[0];
+                        let val = env_var_value(first);
+                        field(&mut lines, "    Env", &format!("{}: {}", first.name, val));
+                        for ev in &env[1..] {
+                            let val = env_var_value(ev);
+                            lines.push(format!("  {:<28}  {}: {}", "", ev.name, val));
+                        }
+                    }
+                } else {
+                    field(&mut lines, "    Env", "<none>");
+                }
+
+                if let Some(res) = &c.resources {
+                    if let Some(req) = &res.requests {
+                        let s = req
+                            .iter()
+                            .map(|(k, v)| format!("{}: {}", k, v.0))
+                            .collect::<Vec<_>>()
+                            .join("  ");
+                        field(&mut lines, "    Requests", &s);
+                    }
+                    if let Some(lim) = &res.limits {
+                        let s = lim
+                            .iter()
+                            .map(|(k, v)| format!("{}: {}", k, v.0))
+                            .collect::<Vec<_>>()
+                            .join("  ");
+                        field(&mut lines, "    Limits", &s);
+                    }
+                }
+
+                if let Some(p) = &c.liveness_probe {
+                    field(&mut lines, "    Liveness", &probe_str(p));
+                }
+                if let Some(p) = &c.readiness_probe {
+                    field(&mut lines, "    Readiness", &probe_str(p));
+                }
+
+                if let Some(mounts) = &c.volume_mounts {
+                    if !mounts.is_empty() {
+                        let ms = mounts
+                            .iter()
+                            .map(|m| {
+                                format!(
+                                    "{}{}",
+                                    m.mount_path,
+                                    if m.read_only.unwrap_or(false) {
+                                        " (ro)"
+                                    } else {
+                                        ""
+                                    }
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        field(&mut lines, "    Mounts", &ms);
+                    }
+                }
+            }
+
+            if let Some(vols) = &pod_spec.volumes {
+                lines.push("  Volumes:".into());
+                for v in vols {
+                    lines.push(format!("    {}", v.name));
+                    if let Some(sec) = &v.secret {
+                        field(&mut lines, "      Type", "Secret");
+                        field(
+                            &mut lines,
+                            "      SecretName",
+                            sec.secret_name.as_deref().unwrap_or("<none>"),
+                        );
+                    } else if let Some(cm) = &v.config_map {
+                        field(&mut lines, "      Type", "ConfigMap");
+                        field(
+                            &mut lines,
+                            "      ConfigMapName",
+                            cm.name.as_deref().unwrap_or("<none>"),
+                        );
+                    } else if v.empty_dir.is_some() {
+                        field(&mut lines, "      Type", "EmptyDir");
+                    } else {
+                        field(&mut lines, "      Type", "other");
+                    }
+                }
+            }
+
+            multiline_labels(
+                &mut lines,
+                "  Node-Selectors",
+                pod_spec.node_selector.as_ref(),
+            );
+            if let Some(tols) = &pod_spec.tolerations {
+                if tols.is_empty() {
+                    field(&mut lines, "  Tolerations", "<none>");
+                } else {
+                    let first = toleration_str(&tols[0]);
+                    field(&mut lines, "  Tolerations", &first);
+                    for t in &tols[1..] {
+                        lines.push(format!("  {:<28}  {}", "", toleration_str(t)));
+                    }
+                }
+            }
+        }
+    }
+
+    section(&mut lines, "Conditions");
+    if let Some(st) = status {
+        if let Some(conds) = &st.conditions {
+            lines.push(format!("  {:<20}  {:<8}  {}", "Type", "Status", "Reason"));
+            lines.push(format!("  {:<20}  {:<8}  {}", "────", "──────", "──────"));
+            for c in conds {
+                lines.push(format!(
+                    "  {:<20}  {:<8}  {}",
+                    c.type_,
+                    c.status,
+                    c.reason.as_deref().unwrap_or("")
+                ));
+            }
+        }
+    }
+
+    section(&mut lines, "Hints");
+    lines.push(format!(
+        "  kubectl describe deployment/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push(format!(
+        "  kubectl get deployment/{} -n {} -o yaml",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push("".into());
+    lines.push("  Esc / q — close   ↑ ↓ PgDn PgUp Home End — navigate".into());
+    lines
+}
+
+async fn describe_pod(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
+    let api: Api<Pod> = match ns {
+        Some(n) => Api::namespaced(client.clone(), n),
+        None => Api::all(client.clone()),
+    };
+    let mut lines = Vec::new();
+
+    let p = match api.get(name).await {
+        Ok(p) => p,
+        Err(e) => {
+            lines.push(format!("  Error fetching Pod '{}': {}", name, e));
+            return lines;
+        }
+    };
+
+    let meta = &p.metadata;
+    let spec = p.spec.as_ref();
+    let status = p.status.as_ref();
+
+    section(&mut lines, "Identity");
+    field(&mut lines, "Name", opt_str(&meta.name));
+    field(&mut lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        &mut lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    field(&mut lines, "Labels", &labels_str(meta.labels.as_ref()));
+    field(
+        &mut lines,
+        "Node",
+        spec.and_then(|s| s.node_name.as_deref())
+            .unwrap_or("<none>"),
+    );
+    field(
+        &mut lines,
+        "ServiceAccount",
+        spec.and_then(|s| s.service_account_name.as_deref())
+            .unwrap_or("<none>"),
+    );
+
+    section(&mut lines, "Status");
+    field(
+        &mut lines,
+        "Phase",
+        status.and_then(|s| s.phase.as_deref()).unwrap_or("<none>"),
+    );
+    field(
+        &mut lines,
+        "Pod IP",
+        status.and_then(|s| s.pod_ip.as_deref()).unwrap_or("<none>"),
+    );
+    field(
+        &mut lines,
+        "Host IP",
+        status
+            .and_then(|s| s.host_ip.as_deref())
+            .unwrap_or("<none>"),
+    );
+
+    section(&mut lines, "Containers");
+    if let Some(s) = spec {
+        for c in &s.containers {
+            lines.push(format!("  Container: {}", c.name));
+            field(
+                &mut lines,
+                "    Image",
+                c.image.as_deref().unwrap_or("<none>"),
+            );
+            let ports = c
+                .ports
+                .as_ref()
+                .map(|ps| {
+                    ps.iter()
+                        .map(|p| {
+                            format!(
+                                "{}/{}",
+                                p.container_port,
+                                p.protocol.as_deref().unwrap_or("TCP")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_else(|| "<none>".into());
+            field(&mut lines, "    Ports", &ports);
+            let limits = c
+                .resources
+                .as_ref()
+                .and_then(|r| r.limits.as_ref())
+                .map(|l| {
+                    l.iter()
+                        .map(|(k, v)| format!("{}={}", k, v.0))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_else(|| "<none>".into());
+            field(&mut lines, "    Limits", &limits);
+        }
+    }
+
+    section(&mut lines, "Container Statuses");
+    if let Some(cs_list) = status.and_then(|s| s.container_statuses.as_ref()) {
+        for cs in cs_list {
+            lines.push(format!("  Container: {}", cs.name));
+            field(&mut lines, "    Ready", &cs.ready.to_string());
+            field(
+                &mut lines,
+                "    Restart count",
+                &cs.restart_count.to_string(),
+            );
+            field(&mut lines, "    Image", &cs.image);
+            if let Some(state) = &cs.state {
+                if let Some(r) = &state.running {
+                    field(
+                        &mut lines,
+                        "    State",
+                        &format!(
+                            "Running since {}",
+                            r.started_at
+                                .as_ref()
+                                .map(|t| t.0.to_rfc2822())
+                                .unwrap_or_else(|| "?".into())
+                        ),
+                    );
+                } else if let Some(w) = &state.waiting {
+                    field(
+                        &mut lines,
+                        "    State",
+                        &format!("Waiting — {}", w.reason.as_deref().unwrap_or("?")),
+                    );
+                } else if let Some(t) = &state.terminated {
+                    field(
+                        &mut lines,
+                        "    State",
+                        &format!(
+                            "Terminated — exit {} ({})",
+                            t.exit_code,
+                            t.reason.as_deref().unwrap_or("?")
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    section(&mut lines, "Conditions");
+    if let Some(conds) = status.and_then(|s| s.conditions.as_ref()) {
+        lines.push(format!("  {:<24}  {}", "Type", "Status"));
+        lines.push(format!("  {:<24}  {}", "────", "──────"));
+        for c in conds {
+            lines.push(format!("  {:<24}  {}", c.type_, c.status));
+        }
+    }
+
+    section(&mut lines, "Hints");
+    lines.push(format!(
+        "  kubectl describe pod/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push(format!(
+        "  kubectl logs {} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push("".into());
+    lines.push("  Esc / q — close   ↑ ↓ — scroll".into());
+    lines
+}
+
+async fn describe_service(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
+    let api: Api<Service> = match ns {
+        Some(n) => Api::namespaced(client.clone(), n),
+        None => Api::all(client.clone()),
+    };
+    let mut lines = Vec::new();
+
+    let svc = match api.get(name).await {
+        Ok(s) => s,
+        Err(e) => {
+            lines.push(format!("  Error fetching Service '{}': {}", name, e));
+            return lines;
+        }
+    };
+
+    let meta = &svc.metadata;
+    let spec = svc.spec.as_ref();
+
+    section(&mut lines, "Identity");
+    field(&mut lines, "Name", opt_str(&meta.name));
+    field(&mut lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        &mut lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
+    annotations_lines(&mut lines, "Annotations", meta.annotations.as_ref());
+
+    section(&mut lines, "Spec");
+    if let Some(s) = spec {
+        field(&mut lines, "Type", s.type_.as_deref().unwrap_or("<none>"));
+        field(
+            &mut lines,
+            "ClusterIP",
+            s.cluster_ip.as_deref().unwrap_or("<none>"),
+        );
+        multiline_labels(&mut lines, "Selector", s.selector.as_ref());
+
+        if let Some(ps) = &s.ports {
+            if ps.is_empty() {
+                field(&mut lines, "Ports", "<none>");
+            } else {
+                for (i, p) in ps.iter().enumerate() {
+                    let proto = p.protocol.as_deref().unwrap_or("TCP");
+                    let name_part = p
+                        .name
+                        .as_ref()
+                        .map(|n| format!(" ({})", n))
+                        .unwrap_or_default();
+                    let target = p
+                        .target_port
+                        .as_ref()
+                        .map(int_or_str)
+                        .unwrap_or_else(|| p.port.to_string());
+                    let node_part = p
+                        .node_port
+                        .map(|np| format!("  NodePort: {}", np))
+                        .unwrap_or_default();
+                    let line = format!(
+                        "{}/{}{} -> {}{}",
+                        p.port, proto, name_part, target, node_part
+                    );
+                    if i == 0 {
+                        field(&mut lines, "Ports", &line);
+                    } else {
+                        lines.push(format!("  {:<28}  {}", "", line));
+                    }
+                }
+            }
+        } else {
+            field(&mut lines, "Ports", "<none>");
+        }
+
+        let external_ips = s
+            .external_ips
+            .as_ref()
+            .map(|v: &Vec<String>| v.join(", "))
+            .unwrap_or_else(|| "<none>".into());
+        field(&mut lines, "External IPs", &external_ips);
+
+        if let Some(status) = &svc.status {
+            if let Some(lb) = &status.load_balancer {
+                if let Some(ingresses) = &lb.ingress {
+                    if !ingresses.is_empty() {
+                        let ips = ingresses
+                            .iter()
+                            .filter_map(|i| i.ip.clone().or_else(|| i.hostname.clone()))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        field(&mut lines, "LoadBalancer Ingress", &ips);
+                    }
+                }
+            }
+        }
+
+        if let Some(families) = &s.ip_families {
+            field(&mut lines, "IP Families", &families.join(", "));
+        }
+        if let Some(policy) = &s.ip_family_policy {
+            field(&mut lines, "IP Family Policy", policy);
+        }
+    }
+
+    section(&mut lines, "Hints");
+    lines.push(format!(
+        "  kubectl describe service/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push(format!(
+        "  kubectl get endpoints/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push("".into());
+    lines.push("  Esc / q — close   ↑ ↓ PgDn PgUp Home End — navigate".into());
+    lines
+}
+
+async fn describe_replicaset(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
+    let api: Api<ReplicaSet> = match ns {
+        Some(n) => Api::namespaced(client.clone(), n),
+        None => Api::all(client.clone()),
+    };
+    let mut lines = Vec::new();
+
+    let rs = match api.get(name).await {
+        Ok(r) => r,
+        Err(e) => {
+            lines.push(format!("  Error fetching ReplicaSet '{}': {}", name, e));
+            return lines;
+        }
+    };
+
+    let meta = &rs.metadata;
+    let spec = rs.spec.as_ref();
+    let status = rs.status.as_ref();
+
+    section(&mut lines, "Identity");
+    field(&mut lines, "Name", opt_str(&meta.name));
+    field(&mut lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        &mut lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    field(&mut lines, "Labels", &labels_str(meta.labels.as_ref()));
+    let owner = meta
+        .owner_references
+        .as_ref()
+        .map(|o| {
+            o.iter()
+                .map(|r| format!("{}/{}", r.kind, r.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "<none>".into());
+    field(&mut lines, "Owned by", &owner);
+
+    section(&mut lines, "Replicas");
+    field(
+        &mut lines,
+        "Desired",
+        &spec.and_then(|s| s.replicas).unwrap_or(0).to_string(),
+    );
+    field(
+        &mut lines,
+        "Current",
+        &status.map(|s| s.replicas).unwrap_or(0).to_string(),
+    );
+    field(
+        &mut lines,
+        "Ready",
+        &status
+            .and_then(|s| s.ready_replicas)
+            .unwrap_or(0)
+            .to_string(),
+    );
+    field(
+        &mut lines,
+        "Available",
+        &status
+            .and_then(|s| s.available_replicas)
+            .unwrap_or(0)
+            .to_string(),
+    );
+
+    section(&mut lines, "Pod Template");
+    if let Some(s) = spec {
+        let tmpl_labels = labels_str(
+            s.template
+                .as_ref()
+                .and_then(|t| t.metadata.as_ref())
+                .and_then(|m| m.labels.as_ref()),
+        );
+        field(&mut lines, "  Labels", &tmpl_labels);
+        if let Some(pod_spec) = s.template.as_ref().and_then(|t| t.spec.as_ref()) {
+            for c in &pod_spec.containers {
+                lines.push(format!("  Container: {}", c.name));
+                field(
+                    &mut lines,
+                    "    Image",
+                    c.image.as_deref().unwrap_or("<none>"),
+                );
+            }
+        }
+    }
+
+    section(&mut lines, "Hints");
+    lines.push(format!(
+        "  kubectl describe replicaset/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push("".into());
+    lines.push("  Esc / q — close   ↑ ↓ — scroll".into());
+    lines
+}
+
+async fn describe_daemonset(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
+    let api: Api<DaemonSet> = match ns {
+        Some(n) => Api::namespaced(client.clone(), n),
+        None => Api::all(client.clone()),
+    };
+    let mut lines = Vec::new();
+
+    let ds = match api.get(name).await {
+        Ok(d) => d,
+        Err(e) => {
+            lines.push(format!("  Error fetching DaemonSet '{}': {}", name, e));
+            return lines;
+        }
+    };
+
+    let meta = &ds.metadata;
+    let spec = ds.spec.as_ref();
+    let status = ds.status.as_ref();
+
+    section(&mut lines, "Identity");
+    field(&mut lines, "Name", opt_str(&meta.name));
+    field(&mut lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        &mut lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    field(&mut lines, "Labels", &labels_str(meta.labels.as_ref()));
+
+    section(&mut lines, "Status");
+    field(
+        &mut lines,
+        "Desired",
+        &status
+            .map(|s| s.desired_number_scheduled)
+            .unwrap_or(0)
+            .to_string(),
+    );
+    field(
+        &mut lines,
+        "Current",
+        &status
+            .map(|s| s.current_number_scheduled)
+            .unwrap_or(0)
+            .to_string(),
+    );
+    field(
+        &mut lines,
+        "Ready",
+        &status.map(|s| s.number_ready).unwrap_or(0).to_string(),
+    );
+    field(
+        &mut lines,
+        "Available",
+        &status
+            .and_then(|s| s.number_available)
+            .unwrap_or(0)
+            .to_string(),
+    );
+    field(
+        &mut lines,
+        "Unavailable",
+        &status
+            .and_then(|s| s.number_unavailable)
+            .unwrap_or(0)
+            .to_string(),
+    );
+
+    section(&mut lines, "Pod Template");
+    if let Some(s) = spec {
+        if let Some(pod_spec) = &s.template.spec {
+            for c in &pod_spec.containers {
+                lines.push(format!("  Container: {}", c.name));
+                field(
+                    &mut lines,
+                    "    Image",
+                    c.image.as_deref().unwrap_or("<none>"),
+                );
+            }
+            field(
+                &mut lines,
+                "  Node Selector",
+                &labels_str(pod_spec.node_selector.as_ref()),
+            );
+        }
+    }
+
+    section(&mut lines, "Hints");
+    lines.push(format!(
+        "  kubectl describe daemonset/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push("".into());
+    lines.push("  Esc / q — close   ↑ ↓ — scroll".into());
+    lines
+}
+
+async fn describe_job(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
+    let api: Api<Job> = match ns {
+        Some(n) => Api::namespaced(client.clone(), n),
+        None => Api::all(client.clone()),
+    };
+    let mut lines = Vec::new();
+
+    let j = match api.get(name).await {
+        Ok(j) => j,
+        Err(e) => {
+            lines.push(format!("  Error fetching Job '{}': {}", name, e));
+            return lines;
+        }
+    };
+
+    let meta = &j.metadata;
+    let spec = j.spec.as_ref();
+    let status = j.status.as_ref();
+
+    section(&mut lines, "Identity");
+    field(&mut lines, "Name", opt_str(&meta.name));
+    field(&mut lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        &mut lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    field(&mut lines, "Labels", &labels_str(meta.labels.as_ref()));
+
+    section(&mut lines, "Spec");
+    field(
+        &mut lines,
+        "Completions",
+        &spec.and_then(|s| s.completions).unwrap_or(1).to_string(),
+    );
+    field(
+        &mut lines,
+        "Parallelism",
+        &spec.and_then(|s| s.parallelism).unwrap_or(1).to_string(),
+    );
+    field(
+        &mut lines,
+        "BackoffLimit",
+        &spec.and_then(|s| s.backoff_limit).unwrap_or(6).to_string(),
+    );
+
+    section(&mut lines, "Status");
+    field(
+        &mut lines,
+        "Active",
+        &status.and_then(|s| s.active).unwrap_or(0).to_string(),
+    );
+    field(
+        &mut lines,
+        "Succeeded",
+        &status.and_then(|s| s.succeeded).unwrap_or(0).to_string(),
+    );
+    field(
+        &mut lines,
+        "Failed",
+        &status.and_then(|s| s.failed).unwrap_or(0).to_string(),
+    );
+    field(
+        &mut lines,
+        "Start time",
+        &status
+            .and_then(|s| s.start_time.as_ref())
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    field(
+        &mut lines,
+        "End time",
+        &status
+            .and_then(|s| s.completion_time.as_ref())
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+
+    section(&mut lines, "Conditions");
+    if let Some(conds) = status.and_then(|s| s.conditions.as_ref()) {
+        lines.push(format!("  {:<20}  {:<8}  {}", "Type", "Status", "Message"));
+        lines.push(format!("  {:<20}  {:<8}  {}", "────", "──────", "───────"));
+        for c in conds {
+            lines.push(format!(
+                "  {:<20}  {:<8}  {}",
+                c.type_,
+                c.status,
+                c.message.as_deref().unwrap_or("")
+            ));
+        }
+    }
+
+    section(&mut lines, "Hints");
+    lines.push(format!(
+        "  kubectl describe job/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push("".into());
+    lines.push("  Esc / q — close   ↑ ↓ — scroll".into());
+    lines
+}
+
+async fn fetch_describe_lines(
+    client: &Client,
+    pane: Pane,
+    name: &str,
+    ns: Option<&str>,
+) -> Vec<String> {
+    match pane {
+        Pane::Pods => describe_pod(client, name, ns).await,
+        Pane::Services => describe_service(client, name, ns).await,
+        Pane::Deployments => describe_deployment(client, name, ns).await,
+        Pane::ReplicaSets => describe_replicaset(client, name, ns).await,
+        Pane::DaemonSets => describe_daemonset(client, name, ns).await,
+        Pane::Jobs => describe_job(client, name, ns).await,
+    }
+}
+
 struct DetailModal {
     title: String,
     lines: Vec<String>,
     scroll: usize,
+    visible_height: usize,
 }
 
 impl DetailModal {
-    fn from_row(row: &ResourceRow, pane_title: &str, headers: &[&str]) -> Self {
-        let mut lines: Vec<String> = Vec::new();
-
-        lines.push("━━━ Identity ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".into());
-        lines.push(format!("  Kind  :  {}", pane_title.trim_end_matches('s')));
-        lines.push(format!("  Name  :  {}", row.name));
-        lines.push("".into());
-
-        lines.push("━━━ Details ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".into());
-        for (i, value) in row.data.iter().enumerate() {
-            let label = headers.get(i + 1).copied().unwrap_or("—");
-            lines.push(format!("  {:<14}  {}", label, value));
-        }
-        lines.push("".into());
-
-        lines.push("━━━ Hints ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".into());
-        lines.push(format!(
-            "  kubectl describe {} {}",
-            pane_title.to_lowercase().trim_end_matches('s'),
-            row.name
-        ));
-        lines.push(format!(
-            "  kubectl get {} {} -o yaml",
-            pane_title.to_lowercase().trim_end_matches('s'),
-            row.name
-        ));
-        lines.push("".into());
-        lines.push("  Press  Esc / q  to close this panel.".into());
-        lines.push("  Use  ↑ / ↓  to scroll.".into());
-
-        Self {
-            title: format!(" ✦ {} — {} ", pane_title, row.name),
-            lines,
-            scroll: 0,
-        }
-    }
-
-    fn scroll_down(&mut self, max_visible: usize) {
-        let max = self.lines.len().saturating_sub(max_visible);
+    fn scroll_down(&mut self) {
+        let max = self.lines.len().saturating_sub(self.visible_height);
         if self.scroll < max {
             self.scroll += 1;
         }
     }
-
     fn scroll_up(&mut self) {
         self.scroll = self.scroll.saturating_sub(1);
+    }
+    fn page_down(&mut self) {
+        let max = self.lines.len().saturating_sub(self.visible_height);
+        let step = self.visible_height.saturating_sub(1).max(1);
+        self.scroll = (self.scroll + step).min(max);
+    }
+    fn page_up(&mut self) {
+        let step = self.visible_height.saturating_sub(1).max(1);
+        self.scroll = self.scroll.saturating_sub(step);
+    }
+    fn scroll_to_top(&mut self) {
+        self.scroll = 0;
+    }
+    fn scroll_to_bottom(&mut self) {
+        self.scroll = self.lines.len().saturating_sub(self.visible_height);
     }
 }
 
@@ -213,14 +1234,12 @@ impl App {
     fn new() -> Self {
         let mut states = BTreeMap::new();
         let mut rows = BTreeMap::new();
-
         for &pane in Pane::all() {
             let mut state = TableState::default();
             state.select(Some(0));
             states.insert(pane, state);
             rows.insert(pane, vec![]);
         }
-
         Self {
             active_pane: Pane::Pods,
             rows,
@@ -244,20 +1263,13 @@ impl App {
         self.rows.get(&self.active_pane).map_or(0, |v| v.len())
     }
 
-    fn open_detail(&mut self) {
+    fn selected_row_info(&self) -> Option<(Pane, String, String)> {
         let pane = self.active_pane;
-        let cfg = PANE_CONFIGS.iter().find(|c| c.pane == pane).unwrap();
-        let rows = match self.rows.get(&pane) {
-            Some(r) => r,
-            None => return,
-        };
-        let idx = match self.states.get(&pane).and_then(|s| s.selected()) {
-            Some(i) => i,
-            None => return,
-        };
-        if let Some(row) = rows.get(idx) {
-            self.detail = Some(DetailModal::from_row(row, cfg.title, cfg.headers));
-        }
+        let idx = self.states.get(&pane)?.selected()?;
+        let row = self.rows.get(&pane)?.get(idx)?;
+        let name = row.name.clone();
+        let ns = row.namespace.clone();
+        Some((pane, name, ns))
     }
 }
 
@@ -292,12 +1304,32 @@ async fn main() -> Result<()> {
                         }
                         KeyCode::Down => {
                             if let Some(d) = app.detail.as_mut() {
-                                d.scroll_down(40);
+                                d.scroll_down();
                             }
                         }
                         KeyCode::Up => {
                             if let Some(d) = app.detail.as_mut() {
                                 d.scroll_up();
+                            }
+                        }
+                        KeyCode::PageDown => {
+                            if let Some(d) = app.detail.as_mut() {
+                                d.page_down();
+                            }
+                        }
+                        KeyCode::PageUp => {
+                            if let Some(d) = app.detail.as_mut() {
+                                d.page_up();
+                            }
+                        }
+                        KeyCode::End => {
+                            if let Some(d) = app.detail.as_mut() {
+                                d.scroll_to_bottom();
+                            }
+                        }
+                        KeyCode::Home => {
+                            if let Some(d) = app.detail.as_mut() {
+                                d.scroll_to_top();
                             }
                         }
                         _ => {}
@@ -308,7 +1340,34 @@ async fn main() -> Result<()> {
                 match key.code {
                     KeyCode::Char('q') => break,
 
-                    KeyCode::Enter => app.open_detail(),
+                    KeyCode::Enter => {
+                        if let Some((pane, name, row_ns)) = app.selected_row_info() {
+                            let ns = if row_ns.is_empty() {
+                                None
+                            } else {
+                                Some(row_ns)
+                            };
+                            let cfg = PANE_CONFIGS.iter().find(|c| c.pane == pane).unwrap();
+
+                            app.detail = Some(DetailModal {
+                                title: format!(" ✦ {} — {} ", cfg.title, name),
+                                lines: vec!["  Loading …".into()],
+                                scroll: 0,
+                                visible_height: 0,
+                            });
+                            terminal.draw(|f| ui(f, &mut app))?;
+
+                            let lines =
+                                fetch_describe_lines(&client, pane, &name, ns.as_deref()).await;
+
+                            app.detail = Some(DetailModal {
+                                title: format!(" ✦ {} — {} ", cfg.title, name),
+                                lines,
+                                scroll: 0,
+                                visible_height: 0,
+                            });
+                        }
+                    }
 
                     KeyCode::Tab => {
                         let idx = Pane::all()
@@ -426,7 +1485,6 @@ fn ui_namespaces(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!("[{}] {}  ", i, n), style)
         })
         .collect();
-
     f.render_widget(
         Paragraph::new(Line::from(spans)).block(
             Block::default()
@@ -491,7 +1549,7 @@ fn ui(f: &mut Frame, app: &mut App) {
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_layout = Layout::default()
+    let vert = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Percentage((100 - percent_y) / 2),
@@ -499,7 +1557,6 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_y) / 2),
         ])
         .split(area);
-
     Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -507,12 +1564,14 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage(percent_x),
             Constraint::Percentage((100 - percent_x) / 2),
         ])
-        .split(popup_layout[1])[1]
+        .split(vert[1])[1]
 }
 
 fn ui_render_detail(f: &mut Frame, detail: &mut DetailModal) {
     let area = centered_rect(80, 80, f.size());
     let inner_h = area.height.saturating_sub(2) as usize;
+
+    detail.visible_height = inner_h;
 
     let max_scroll = detail.lines.len().saturating_sub(inner_h);
     if detail.scroll > max_scroll {
@@ -525,7 +1584,7 @@ fn ui_render_detail(f: &mut Frame, detail: &mut DetailModal) {
         .skip(detail.scroll)
         .take(inner_h)
         .map(|l| {
-            if l.starts_with("━━━") {
+            if l.contains("━━━") {
                 Line::from(Span::styled(
                     l.clone(),
                     Style::default()
@@ -534,29 +1593,36 @@ fn ui_render_detail(f: &mut Frame, detail: &mut DetailModal) {
                 ))
             } else if l.trim_start().starts_with("kubectl") {
                 Line::from(Span::styled(l.clone(), Style::default().fg(Color::Yellow)))
-            } else if l.trim_start().starts_with("Press") || l.trim_start().starts_with("Use") {
+            } else if l.trim_start().starts_with("Esc") {
                 Line::from(Span::styled(
                     l.clone(),
                     Style::default().fg(Color::DarkGray),
                 ))
+            } else if l.trim_start().starts_with("Container:") {
+                Line::from(Span::styled(
+                    l.clone(),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ))
             } else {
-                let parts: Vec<&str> = l.splitn(2, "  ").collect();
-                if parts.len() == 2 {
+                let trimmed = l.trim_start();
+                let indent = l.len() - trimmed.len();
+                if let Some(pos) = trimmed.find("  ") {
+                    let label = &trimmed[..pos];
+                    let value = trimmed[pos..].trim_start();
                     Line::from(vec![
-                        Span::styled(format!("{:}", parts[0]), Style::default().fg(Color::Blue)),
+                        Span::raw(" ".repeat(indent)),
+                        Span::styled(format!("{:<28}", label), Style::default().fg(Color::Blue)),
                         Span::raw("  "),
-                        Span::styled(parts[1].to_string(), Style::default().fg(Color::White)),
+                        Span::styled(value.to_string(), Style::default().fg(Color::White)),
                     ])
                 } else {
-                    Line::from(l.clone())
+                    Line::from(Span::styled(l.clone(), Style::default().fg(Color::Gray)))
                 }
             }
         })
         .collect();
-
-    let mut scrollbar_state = ScrollbarState::new(detail.lines.len()).position(detail.scroll);
-
-    f.render_widget(Clear, area);
 
     let scroll_hint = if detail.lines.len() > inner_h {
         format!(" [{}/{}] ", detail.scroll + 1, max_scroll + 1)
@@ -564,22 +1630,25 @@ fn ui_render_detail(f: &mut Frame, detail: &mut DetailModal) {
         String::new()
     };
 
-    let paragraph = Paragraph::new(visible)
-        .block(
-            Block::default()
-                .title(Span::styled(
-                    format!("{}{}", detail.title, scroll_hint),
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Green)),
-        )
-        .wrap(Wrap { trim: false });
+    let mut scrollbar_state = ScrollbarState::new(detail.lines.len()).position(detail.scroll);
 
-    f.render_widget(paragraph, area);
-
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(visible)
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        format!("{}{}", detail.title, scroll_hint),
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Green)),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
     f.render_stateful_widget(
         Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("↑"))
@@ -604,13 +1673,11 @@ fn ui_render_table(
     } else {
         Color::White
     };
-
     let rows = items.iter().map(|item| {
         let cells = std::iter::once(Cell::from(item.name.clone()))
             .chain(item.data.iter().map(|d| Cell::from(d.clone())));
         Row::new(cells)
     });
-
     let table = Table::new(rows, constraints)
         .header(
             Row::new(headers.iter().map(|h| Cell::from(*h))).style(
@@ -627,6 +1694,5 @@ fn ui_render_table(
         )
         .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol(">> ");
-
     f.render_stateful_widget(table, area, state);
 }

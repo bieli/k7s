@@ -9,6 +9,7 @@ use std::fmt::Debug;
 
 pub struct ResourceRow {
     pub name: String,
+    pub namespace: String,
     pub data: Vec<String>,
 }
 
@@ -83,9 +84,11 @@ impl IntoResourceRow for Namespace {
     fn into_resource_row(self) -> ResourceRow {
         let age = get_age(&self.metadata);
         let name = self.metadata.name.unwrap_or_default();
+        let namespace = self.metadata.namespace.clone().unwrap_or_default();
 
         ResourceRow {
             name,
+            namespace,
             data: vec![age],
         }
     }
@@ -110,10 +113,12 @@ impl IntoResourceRow for Pod {
             .unwrap_or_else(|| "0".into());
 
         let age = get_age(&self.metadata);
+        let namespace = self.metadata.namespace.clone().unwrap_or_default();
         let name = self.metadata.name.unwrap_or_default();
 
         ResourceRow {
-            name: name,
+            name,
+            namespace,
             data: vec![ready, phase, restarts, age],
         }
     }
@@ -149,10 +154,12 @@ impl IntoResourceRow for Service {
             .unwrap_or_default();
 
         let age = get_age(&self.metadata);
+        let namespace = self.metadata.namespace.clone().unwrap_or_default();
         let name = self.metadata.name.unwrap_or_default();
 
         ResourceRow {
-            name: name,
+            name,
+            namespace,
             data: vec![type_, cluster_ip, external_ip, ports, age],
         }
     }
@@ -179,10 +186,12 @@ impl IntoResourceRow for Deployment {
             .to_string();
 
         let age = get_age(&self.metadata);
+        let namespace = self.metadata.namespace.clone().unwrap_or_default();
         let name = self.metadata.name.unwrap_or_default();
 
         ResourceRow {
-            name: name,
+            name,
+            namespace,
             data: vec![ready, up_to_date, available, age],
         }
     }
@@ -207,10 +216,12 @@ impl IntoResourceRow for ReplicaSet {
             .to_string();
 
         let age = get_age(&self.metadata);
+        let namespace = self.metadata.namespace.clone().unwrap_or_default();
         let name = self.metadata.name.unwrap_or_default();
 
         ResourceRow {
-            name: name,
+            name,
+            namespace,
             data: vec![desired, current, ready, age],
         }
     }
@@ -233,10 +244,12 @@ impl IntoResourceRow for DaemonSet {
         let ready = status.map(|s| s.number_ready).unwrap_or(0).to_string();
 
         let age = get_age(&self.metadata);
+        let namespace = self.metadata.namespace.clone().unwrap_or_default();
         let name = self.metadata.name.unwrap_or_default();
 
         ResourceRow {
-            name: name,
+            name,
+            namespace,
             data: vec![desired, current, ready, age],
         }
     }
@@ -260,10 +273,12 @@ impl IntoResourceRow for Job {
         let failed = status.and_then(|s| s.failed).unwrap_or(0).to_string();
 
         let age = get_age(&self.metadata);
+        let namespace = self.metadata.namespace.clone().unwrap_or_default();
         let name = self.metadata.name.unwrap_or_default();
 
         ResourceRow {
-            name: name,
+            name,
+            namespace,
             data: vec![completions, active, failed, age],
         }
     }
