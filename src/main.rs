@@ -124,7 +124,6 @@ async fn main() -> Result<()> {
                     .chain(ns_list.items.into_iter().filter_map(|n| n.metadata.name))
                     .collect();
                 let t = app.get_current_ns();
-                // app.pods = fetch_pods(&client, &t).await;
                 app.pods = fetch_resources::<Pod>(&client, &t).await;
             }
 
