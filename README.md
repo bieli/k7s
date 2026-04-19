@@ -36,6 +36,19 @@ Based on kube config file, internal K8s API client can "speak" with your kuberne
 ```bash
 export KUBECONFIG=/home/$USER/.kube/config
 ```
+
+#### Tip: How to export kubeconfig in different variants of clusters
+
+##### k8s, kind
+```bash
+kubectl config view --raw > ~/.kube/config
+```
+
+##### k0s
+```bash
+sudo k0s kubeconfig admin > ~/.k0s/config
+```
+
 ### Install k7s inside your OS
 
 You need to have `cargo` - RUST programming language ecosystem base tool (multiplatform)
