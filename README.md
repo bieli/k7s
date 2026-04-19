@@ -109,6 +109,7 @@ Below architectures were testet on physical machines:
 | ARMv7l / ARMv7 Processor rev 4 (v7l) / Cortex-A7  | musl | `k7s-arm-unknown-linux-gnueabihf` | BananaPI PRO |
 | ARMv8-A / aarch64 / Cortex-A53  | musl | `k7s-aarch64-unknown-linux-musl` | Raspberry Pi 3 Model B Rev 1.2 |
 | Apple SIlicon M | apple | `k7s-aarch64-apple-darwin` | Apple M4 Max |
+| Intel(R) Core(TM) i5-2400S | apple | `k7s-x86_64-apple-darwin` | iMac from 2018 (MacOS ver. 10.13.6) |
 
 #### How to deploy and run `k7s` on your OS
 ```bash
