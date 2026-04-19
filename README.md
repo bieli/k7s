@@ -1,6 +1,6 @@
 ![github_tag](https://img.shields.io/github/v/tag/bieli/k7s)
 [![Crates.io](https://img.shields.io/crates/v/k7s.svg)](https://crates.io/crates/k7s)
-
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=bieli_k7s&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=bieli_k7s)
 # k7s - Kubernetes Resources Viewer
 RUST thin kubectl replacer and maybe k9s in next iterations ;-) Let's dance!
 
