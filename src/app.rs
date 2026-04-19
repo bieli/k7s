@@ -10,7 +10,8 @@ pub const APP_HEADER_TITLE: &str = concat!(
 pub const APP_HEADER_TITLE_LEFT: &str = "--- [ ";
 pub const APP_HEADER_TITLE_RIGHT: &str = " ] ---";
 pub const APP_HEADER_TITLE_K8S_VER: &str = "| K8s API: v";
-pub const TICKS_DELAY: u32 = 1000;
+pub const TICKS_DELAY_MS: u32 = 1000;
+pub const PULLING_DURATION_MS: u32 = 100;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Pane {

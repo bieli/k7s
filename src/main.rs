@@ -22,7 +22,7 @@ use crate::describe_resources::{
 };
 
 mod app;
-use crate::app::{App, DetailModal, Pane, PANE_CONFIGS, TICKS_DELAY};
+use crate::app::{App, DetailModal, Pane, PANE_CONFIGS, PULLING_DURATION_MS, TICKS_DELAY_MS};
 mod ui;
 use crate::ui::ui_create;
 
@@ -177,7 +177,7 @@ async fn main() -> Result<()> {
     loop {
         terminal.draw(|f| ui_create(f, &mut app))?;
 
-        let timeout = Duration::from_millis(100);
+        let timeout = Duration::from_millis(PULLING_DURATION_MS.into());
         if event::poll(timeout.saturating_sub(last_tick.elapsed()))? {
             if let Event::Key(key) = event::read()? {
                 if handle_modal_key(&mut app, key) {
@@ -191,7 +191,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        if last_tick.elapsed() >= Duration::from_millis(TICKS_DELAY.into()) {
+        if last_tick.elapsed() >= Duration::from_millis(TICKS_DELAY_MS.into()) {
             tick_refresh(&mut app, &client).await;
             last_tick = Instant::now();
         }
