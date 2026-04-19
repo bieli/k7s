@@ -13,7 +13,7 @@ RUST thin kubectl replacer and maybe k9s in next iterations ;-) Let's dance!
 ╚═╝  ╚═╝   ╚═╝  ╚════╝
 ```
 
-## Presentation of views insise k7s tool (terminal UI)
+## Presentation of k7s tool screens (terminal UI)
 
 ### k7s main start view
 ![](https://raw.githubusercontent.com/bieli/k7s/main/assets/k7s__screenshot_main_screen__v0.4.9.png)
