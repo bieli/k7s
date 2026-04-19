@@ -1,0 +1,1068 @@
+use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet};
+use k8s_openapi::api::batch::v1::Job;
+use k8s_openapi::api::core::v1::{Pod, Service};
+use kube::Api;
+use kube::Client;
+use std::collections::BTreeMap;
+
+fn opt_str(v: &Option<String>) -> &str {
+    v.as_deref().unwrap_or("<none>")
+}
+
+fn is_json_blob(v: &str) -> bool {
+    let t = v.trim();
+    (t.starts_with('{') && t.ends_with('}')) || (t.starts_with('[') && t.ends_with(']'))
+}
+
+fn truncate(v: &str) -> String {
+    const MAX: usize = 120;
+    v.get(..MAX)
+        .map(|s| format!("{}…", s))
+        .unwrap_or_else(|| v.to_string())
+}
+
+fn annotation_display(label: &str, key: &str, value: &str, first: bool) -> String {
+    let display = format!("{}: {}", key, truncate(value));
+    if first {
+        format!("  {:<28}  {}", label, display)
+    } else {
+        format!("  {:<28}  {}", "", display)
+    }
+}
+
+fn int_or_str(v: &k8s_openapi::apimachinery::pkg::util::intstr::IntOrString) -> String {
+    match v {
+        k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(n) => n.to_string(),
+        k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::String(s) => s.clone(),
+    }
+}
+
+fn annotations_lines(
+    lines: &mut Vec<String>,
+    label: &str,
+    anns: Option<&BTreeMap<String, String>>,
+) {
+    let visible: Vec<_> = match anns {
+        None => {
+            field(lines, label, "<none>");
+            return;
+        }
+        Some(map) => map.iter().filter(|(_, v)| !is_json_blob(v)).collect(),
+    };
+
+    if visible.is_empty() {
+        field(lines, label, "<none>");
+        return;
+    }
+
+    lines.extend(
+        visible
+            .iter()
+            .enumerate()
+            .map(|(i, (k, v))| annotation_display(label, k, v, i == 0)),
+    );
+}
+
+fn section(lines: &mut Vec<String>, title: &str) {
+    lines.push("".into());
+    lines.push(format!(
+        "━━━ {} {}",
+        title,
+        "━".repeat(54_usize.saturating_sub(title.len()))
+    ));
+}
+
+fn field(lines: &mut Vec<String>, label: &str, value: &str) {
+    lines.push(format!("  {:<28}  {}", label, value));
+}
+
+fn deployment_section_identity(
+    lines: &mut Vec<String>,
+    meta: &k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
+) {
+    section(lines, "Identity");
+    field(lines, "Name", opt_str(&meta.name));
+    field(lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    multiline_labels(lines, "Labels", meta.labels.as_ref());
+    annotations_lines(lines, "Annotations", meta.annotations.as_ref());
+}
+
+fn deployment_section_spec(
+    lines: &mut Vec<String>,
+    spec: &k8s_openapi::api::apps::v1::DeploymentSpec,
+    status: Option<&k8s_openapi::api::apps::v1::DeploymentStatus>,
+) {
+    section(lines, "Spec");
+    multiline_labels(lines, "Selector", spec.selector.match_labels.as_ref());
+
+    let desired = spec.replicas.unwrap_or(1);
+    let updated = status.and_then(|s| s.updated_replicas).unwrap_or(0);
+    let total = status.and_then(|s| s.replicas).unwrap_or(0);
+    let available = status.and_then(|s| s.available_replicas).unwrap_or(0);
+    let unavailable = status.and_then(|s| s.unavailable_replicas).unwrap_or(0);
+    field(
+        lines,
+        "Replicas",
+        &format!(
+            "{} desired | {} updated | {} total | {} available | {} unavailable",
+            desired, updated, total, available, unavailable
+        ),
+    );
+
+    if let Some(strategy) = &spec.strategy {
+        field(
+            lines,
+            "StrategyType",
+            strategy.type_.as_deref().unwrap_or("<none>"),
+        );
+        if let Some(ru) = &strategy.rolling_update {
+            let max_un = ru
+                .max_unavailable
+                .as_ref()
+                .map(int_or_str)
+                .unwrap_or_else(|| "25%".into());
+            let max_sur = ru
+                .max_surge
+                .as_ref()
+                .map(int_or_str)
+                .unwrap_or_else(|| "25%".into());
+            field(
+                lines,
+                "RollingUpdateStrategy",
+                &format!("{} max unavailable, {} max surge", max_un, max_sur),
+            );
+        }
+    }
+    field(
+        lines,
+        "MinReadySeconds",
+        &spec.min_ready_seconds.unwrap_or(0).to_string(),
+    );
+}
+
+fn deployment_container_lines(lines: &mut Vec<String>, c: &k8s_openapi::api::core::v1::Container) {
+    lines.push(format!("  Container: {}", c.name));
+    field(lines, "    Image", c.image.as_deref().unwrap_or("<none>"));
+
+    let ports = c
+        .ports
+        .as_ref()
+        .map(|ps| {
+            ps.iter()
+                .map(|p| {
+                    let proto = p.protocol.as_deref().unwrap_or("TCP");
+                    match p.name.as_deref() {
+                        Some(n) => format!("{}/{} ({})", p.container_port, proto, n),
+                        None => format!("{}/{}", p.container_port, proto),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "<none>".into());
+    field(lines, "    Ports", &ports);
+
+    if let Some(args) = &c.args {
+        if let Some((first, rest)) = args.split_first() {
+            field(lines, "    Args", first);
+            rest.iter()
+                .for_each(|a| lines.push(format!("  {:<28}  {}", "", a)));
+        }
+    }
+
+    let env_entries: Vec<_> = c
+        .env
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|ev| format!("{}: {}", ev.name, env_var_value(ev)))
+        .collect();
+    if env_entries.is_empty() {
+        field(lines, "    Env", "<none>");
+    } else if let Some((first, rest)) = env_entries.split_first() {
+        field(lines, "    Env", first);
+        rest.iter()
+            .for_each(|e| lines.push(format!("  {:<28}  {}", "", e)));
+    }
+
+    if let Some(res) = &c.resources {
+        if let Some(req) = &res.requests {
+            field(
+                lines,
+                "    Requests",
+                &req.iter()
+                    .map(|(k, v)| format!("{}: {}", k, v.0))
+                    .collect::<Vec<_>>()
+                    .join("  "),
+            );
+        }
+        if let Some(lim) = &res.limits {
+            field(
+                lines,
+                "    Limits",
+                &lim.iter()
+                    .map(|(k, v)| format!("{}: {}", k, v.0))
+                    .collect::<Vec<_>>()
+                    .join("  "),
+            );
+        }
+    }
+
+    if let Some(p) = &c.liveness_probe {
+        field(lines, "    Liveness", &probe_str(p));
+    }
+    if let Some(p) = &c.readiness_probe {
+        field(lines, "    Readiness", &probe_str(p));
+    }
+
+    if let Some(mounts) = &c.volume_mounts {
+        let ms: Vec<_> = mounts
+            .iter()
+            .map(|m| {
+                format!(
+                    "{}{}",
+                    m.mount_path,
+                    if m.read_only.unwrap_or(false) {
+                        " (ro)"
+                    } else {
+                        ""
+                    }
+                )
+            })
+            .collect();
+        if !ms.is_empty() {
+            field(lines, "    Mounts", &ms.join(", "));
+        }
+    }
+}
+
+fn deployment_volume_lines(lines: &mut Vec<String>, vols: &[k8s_openapi::api::core::v1::Volume]) {
+    lines.push("  Volumes:".into());
+    for v in vols {
+        lines.push(format!("    {}", v.name));
+        let (type_label, name_val) = if let Some(sec) = &v.secret {
+            (
+                "Secret",
+                sec.secret_name.as_deref().unwrap_or("<none>").to_string(),
+            )
+        } else if let Some(cm) = &v.config_map {
+            (
+                "ConfigMap",
+                cm.name.as_deref().unwrap_or("<none>").to_string(),
+            )
+        } else if v.empty_dir.is_some() {
+            ("EmptyDir", String::new())
+        } else {
+            ("other", String::new())
+        };
+        field(lines, "      Type", type_label);
+        if !name_val.is_empty() {
+            field(lines, "      Name", &name_val);
+        }
+    }
+}
+
+fn deployment_section_pod_template(
+    lines: &mut Vec<String>,
+    spec: &k8s_openapi::api::apps::v1::DeploymentSpec,
+) {
+    section(lines, "Pod Template");
+    multiline_labels(
+        lines,
+        "  Labels",
+        spec.template
+            .metadata
+            .as_ref()
+            .and_then(|m| m.labels.as_ref()),
+    );
+
+    let pod_spec = match &spec.template.spec {
+        Some(ps) => ps,
+        None => return,
+    };
+
+    field(
+        lines,
+        "  ServiceAccount",
+        pod_spec.service_account_name.as_deref().unwrap_or("<none>"),
+    );
+
+    pod_spec
+        .containers
+        .iter()
+        .for_each(|c| deployment_container_lines(lines, c));
+
+    if let Some(vols) = &pod_spec.volumes {
+        deployment_volume_lines(lines, vols);
+    }
+
+    multiline_labels(lines, "  Node-Selectors", pod_spec.node_selector.as_ref());
+
+    let tols = pod_spec.tolerations.as_deref().unwrap_or(&[]);
+    if tols.is_empty() {
+        field(lines, "  Tolerations", "<none>");
+    } else if let Some((first, rest)) = tols.split_first() {
+        field(lines, "  Tolerations", &toleration_str(first));
+        rest.iter()
+            .for_each(|t| lines.push(format!("  {:<28}  {}", "", toleration_str(t))));
+    }
+}
+
+fn deployment_section_conditions(
+    lines: &mut Vec<String>,
+    status: Option<&k8s_openapi::api::apps::v1::DeploymentStatus>,
+) {
+    section(lines, "Conditions");
+    let conds = match status.and_then(|s| s.conditions.as_ref()) {
+        Some(c) => c,
+        None => return,
+    };
+    lines.push(format!("  {:<20}  {:<8}  {}", "Type", "Status", "Reason"));
+    lines.push(format!("  {:<20}  {:<8}  {}", "────", "──────", "──────"));
+    conds.iter().for_each(|c| {
+        lines.push(format!(
+            "  {:<20}  {:<8}  {}",
+            c.type_,
+            c.status,
+            c.reason.as_deref().unwrap_or("")
+        ))
+    });
+}
+
+pub async fn describe_deployment(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
+    let api: Api<Deployment> = match ns {
+        Some(n) => Api::namespaced(client.clone(), n),
+        None => Api::all(client.clone()),
+    };
+    let mut lines = Vec::new();
+
+    let d = match api.get(name).await {
+        Ok(d) => d,
+        Err(e) => {
+            lines.push(format!("  Error fetching Deployment '{}': {}", name, e));
+            return lines;
+        }
+    };
+
+    deployment_section_identity(&mut lines, &d.metadata);
+    if let Some(spec) = d.spec.as_ref() {
+        deployment_section_spec(&mut lines, spec, d.status.as_ref());
+        deployment_section_pod_template(&mut lines, spec);
+    }
+    deployment_section_conditions(&mut lines, d.status.as_ref());
+
+    section(&mut lines, "Hints");
+    lines.push(format!(
+        "  kubectl describe deployment/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push(format!(
+        "  kubectl get deployment/{} -n {} -o yaml",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push("".into());
+    lines.push("  Esc / q — close   ↑ ↓ PgDn PgUp Home End — navigate".into());
+    lines
+}
+
+fn multiline_labels(lines: &mut Vec<String>, label: &str, map: Option<&BTreeMap<String, String>>) {
+    match map {
+        None => field(lines, label, "<none>"),
+        Some(m) if m.is_empty() => field(lines, label, "<none>"),
+        Some(m) => {
+            let pairs: Vec<String> = m.iter().map(|(k, v)| format!("{}  =  {}", k, v)).collect();
+            field(lines, label, &pairs[0]);
+            for p in &pairs[1..] {
+                lines.push(format!("  {:<28}  {}", "", p));
+            }
+        }
+    }
+}
+
+fn probe_str(p: &k8s_openapi::api::core::v1::Probe) -> String {
+    use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
+    let action = if let Some(h) = &p.http_get {
+        let port = match &h.port {
+            IntOrString::Int(n) => n.to_string(),
+            IntOrString::String(s) => s.clone(),
+        };
+        format!(
+            "http-get {}:{}{}",
+            h.scheme.as_deref().unwrap_or("HTTP").to_lowercase(),
+            port,
+            h.path.as_deref().unwrap_or("/")
+        )
+    } else if let Some(e) = &p.exec {
+        format!(
+            "exec {}",
+            e.command.as_ref().map(|c| c.join(" ")).unwrap_or_default()
+        )
+    } else if let Some(t) = &p.tcp_socket {
+        format!("tcp-socket :{:?}", t.port)
+    } else {
+        "unknown".into()
+    };
+    format!(
+        "{} delay={}s timeout={}s period={}s #success={} #failure={}",
+        action,
+        p.initial_delay_seconds.unwrap_or(0),
+        p.timeout_seconds.unwrap_or(1),
+        p.period_seconds.unwrap_or(10),
+        p.success_threshold.unwrap_or(1),
+        p.failure_threshold.unwrap_or(3),
+    )
+}
+
+fn env_var_value(ev: &k8s_openapi::api::core::v1::EnvVar) -> String {
+    if let Some(v) = &ev.value {
+        return v.clone();
+    }
+    if let Some(vf) = &ev.value_from {
+        if let Some(fr) = &vf.field_ref {
+            return format!("({})", fr.field_path);
+        }
+        if let Some(sr) = &vf.secret_key_ref {
+            return format!("secret:{}/{}", sr.name.as_deref().unwrap_or("?"), sr.key);
+        }
+        if let Some(cr) = &vf.config_map_key_ref {
+            return format!("configmap:{}/{}", cr.name.as_deref().unwrap_or("?"), cr.key);
+        }
+    }
+    "<none>".into()
+}
+
+fn toleration_str(t: &k8s_openapi::api::core::v1::Toleration) -> String {
+    let key = t.key.as_deref().unwrap_or("*");
+    let op = t.operator.as_deref().unwrap_or("Equal");
+    let effect = t.effect.as_deref().unwrap_or("");
+    if let Some(val) = &t.value {
+        format!("{}={}: {}", key, val, effect)
+    } else {
+        format!("{}:{} ({})", key, effect, op)
+    }
+}
+
+pub async fn describe_pod(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
+    let api: Api<Pod> = match ns {
+        Some(n) => Api::namespaced(client.clone(), n),
+        None => Api::all(client.clone()),
+    };
+    let mut lines = Vec::new();
+
+    let p = match api.get(name).await {
+        Ok(p) => p,
+        Err(e) => {
+            lines.push(format!("  Error fetching Pod '{}': {}", name, e));
+            return lines;
+        }
+    };
+
+    let meta = &p.metadata;
+    let spec = p.spec.as_ref();
+    let status = p.status.as_ref();
+
+    section(&mut lines, "Identity");
+    field(&mut lines, "Name", opt_str(&meta.name));
+    field(&mut lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        &mut lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
+    field(
+        &mut lines,
+        "Node",
+        spec.and_then(|s| s.node_name.as_deref())
+            .unwrap_or("<none>"),
+    );
+    field(
+        &mut lines,
+        "ServiceAccount",
+        spec.and_then(|s| s.service_account_name.as_deref())
+            .unwrap_or("<none>"),
+    );
+
+    section(&mut lines, "Status");
+    field(
+        &mut lines,
+        "Phase",
+        status.and_then(|s| s.phase.as_deref()).unwrap_or("<none>"),
+    );
+    field(
+        &mut lines,
+        "Pod IP",
+        status.and_then(|s| s.pod_ip.as_deref()).unwrap_or("<none>"),
+    );
+    field(
+        &mut lines,
+        "Host IP",
+        status
+            .and_then(|s| s.host_ip.as_deref())
+            .unwrap_or("<none>"),
+    );
+
+    section(&mut lines, "Containers");
+    if let Some(s) = spec {
+        for c in &s.containers {
+            lines.push(format!("  Container: {}", c.name));
+            field(
+                &mut lines,
+                "    Image",
+                c.image.as_deref().unwrap_or("<none>"),
+            );
+            let ports = c
+                .ports
+                .as_ref()
+                .map(|ps| {
+                    ps.iter()
+                        .map(|p| {
+                            format!(
+                                "{}/{}",
+                                p.container_port,
+                                p.protocol.as_deref().unwrap_or("TCP")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_else(|| "<none>".into());
+            field(&mut lines, "    Ports", &ports);
+            let limits = c
+                .resources
+                .as_ref()
+                .and_then(|r| r.limits.as_ref())
+                .map(|l| {
+                    l.iter()
+                        .map(|(k, v)| format!("{}={}", k, v.0))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_else(|| "<none>".into());
+            field(&mut lines, "    Limits", &limits);
+        }
+    }
+
+    section(&mut lines, "Container Statuses");
+    if let Some(cs_list) = status.and_then(|s| s.container_statuses.as_ref()) {
+        for cs in cs_list {
+            lines.push(format!("  Container: {}", cs.name));
+            field(&mut lines, "    Ready", &cs.ready.to_string());
+            field(
+                &mut lines,
+                "    Restart count",
+                &cs.restart_count.to_string(),
+            );
+            field(&mut lines, "    Image", &cs.image);
+            if let Some(state) = &cs.state {
+                if let Some(r) = &state.running {
+                    field(
+                        &mut lines,
+                        "    State",
+                        &format!(
+                            "Running since {}",
+                            r.started_at
+                                .as_ref()
+                                .map(|t| t.0.to_rfc2822())
+                                .unwrap_or_else(|| "?".into())
+                        ),
+                    );
+                } else if let Some(w) = &state.waiting {
+                    field(
+                        &mut lines,
+                        "    State",
+                        &format!("Waiting — {}", w.reason.as_deref().unwrap_or("?")),
+                    );
+                } else if let Some(t) = &state.terminated {
+                    field(
+                        &mut lines,
+                        "    State",
+                        &format!(
+                            "Terminated — exit {} ({})",
+                            t.exit_code,
+                            t.reason.as_deref().unwrap_or("?")
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    section(&mut lines, "Conditions");
+    if let Some(conds) = status.and_then(|s| s.conditions.as_ref()) {
+        lines.push(format!("  {:<24}  {}", "Type", "Status"));
+        lines.push(format!("  {:<24}  {}", "────", "──────"));
+        for c in conds {
+            lines.push(format!("  {:<24}  {}", c.type_, c.status));
+        }
+    }
+
+    section(&mut lines, "Hints");
+    lines.push(format!(
+        "  kubectl describe pod/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push(format!(
+        "  kubectl logs {} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push("".into());
+    lines.push("  Esc / q — close   ↑ ↓ — scroll".into());
+    lines
+}
+
+pub async fn describe_service(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
+    let api: Api<Service> = match ns {
+        Some(n) => Api::namespaced(client.clone(), n),
+        None => Api::all(client.clone()),
+    };
+    let mut lines = Vec::new();
+
+    let svc = match api.get(name).await {
+        Ok(s) => s,
+        Err(e) => {
+            lines.push(format!("  Error fetching Service '{}': {}", name, e));
+            return lines;
+        }
+    };
+
+    let meta = &svc.metadata;
+    let spec = svc.spec.as_ref();
+
+    section(&mut lines, "Identity");
+    field(&mut lines, "Name", opt_str(&meta.name));
+    field(&mut lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        &mut lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
+    annotations_lines(&mut lines, "Annotations", meta.annotations.as_ref());
+
+    section(&mut lines, "Spec");
+    if let Some(s) = spec {
+        field(&mut lines, "Type", s.type_.as_deref().unwrap_or("<none>"));
+        field(
+            &mut lines,
+            "ClusterIP",
+            s.cluster_ip.as_deref().unwrap_or("<none>"),
+        );
+        multiline_labels(&mut lines, "Selector", s.selector.as_ref());
+
+        if let Some(ps) = &s.ports {
+            if ps.is_empty() {
+                field(&mut lines, "Ports", "<none>");
+            } else {
+                for (i, p) in ps.iter().enumerate() {
+                    let proto = p.protocol.as_deref().unwrap_or("TCP");
+                    let name_part = p
+                        .name
+                        .as_ref()
+                        .map(|n| format!(" ({})", n))
+                        .unwrap_or_default();
+                    let target = p
+                        .target_port
+                        .as_ref()
+                        .map(int_or_str)
+                        .unwrap_or_else(|| p.port.to_string());
+                    let node_part = p
+                        .node_port
+                        .map(|np| format!("  NodePort: {}", np))
+                        .unwrap_or_default();
+                    let line = format!(
+                        "{}/{}{} -> {}{}",
+                        p.port, proto, name_part, target, node_part
+                    );
+                    if i == 0 {
+                        field(&mut lines, "Ports", &line);
+                    } else {
+                        lines.push(format!("  {:<28}  {}", "", line));
+                    }
+                }
+            }
+        } else {
+            field(&mut lines, "Ports", "<none>");
+        }
+
+        let external_ips = s
+            .external_ips
+            .as_ref()
+            .map(|v: &Vec<String>| v.join(", "))
+            .unwrap_or_else(|| "<none>".into());
+        field(&mut lines, "External IPs", &external_ips);
+
+        if let Some(status) = &svc.status {
+            if let Some(lb) = &status.load_balancer {
+                if let Some(ingresses) = &lb.ingress {
+                    if !ingresses.is_empty() {
+                        let ips = ingresses
+                            .iter()
+                            .filter_map(|i| i.ip.clone().or_else(|| i.hostname.clone()))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        field(&mut lines, "LoadBalancer Ingress", &ips);
+                    }
+                }
+            }
+        }
+
+        if let Some(families) = &s.ip_families {
+            field(&mut lines, "IP Families", &families.join(", "));
+        }
+        if let Some(policy) = &s.ip_family_policy {
+            field(&mut lines, "IP Family Policy", policy);
+        }
+    }
+
+    section(&mut lines, "Hints");
+    lines.push(format!(
+        "  kubectl describe service/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push(format!(
+        "  kubectl get endpoints/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push("".into());
+    lines.push("  Esc / q — close   ↑ ↓ PgDn PgUp Home End — navigate".into());
+    lines
+}
+
+pub async fn describe_replicaset(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
+    let api: Api<ReplicaSet> = match ns {
+        Some(n) => Api::namespaced(client.clone(), n),
+        None => Api::all(client.clone()),
+    };
+    let mut lines = Vec::new();
+
+    let rs = match api.get(name).await {
+        Ok(r) => r,
+        Err(e) => {
+            lines.push(format!("  Error fetching ReplicaSet '{}': {}", name, e));
+            return lines;
+        }
+    };
+
+    let meta = &rs.metadata;
+    let spec = rs.spec.as_ref();
+    let status = rs.status.as_ref();
+
+    section(&mut lines, "Identity");
+    field(&mut lines, "Name", opt_str(&meta.name));
+    field(&mut lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        &mut lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
+    let owner = meta
+        .owner_references
+        .as_ref()
+        .map(|o| {
+            o.iter()
+                .map(|r| format!("{}/{}", r.kind, r.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "<none>".into());
+    field(&mut lines, "Owned by", &owner);
+
+    section(&mut lines, "Replicas");
+    field(
+        &mut lines,
+        "Desired",
+        &spec.and_then(|s| s.replicas).unwrap_or(0).to_string(),
+    );
+    field(
+        &mut lines,
+        "Current",
+        &status.map(|s| s.replicas).unwrap_or(0).to_string(),
+    );
+    field(
+        &mut lines,
+        "Ready",
+        &status
+            .and_then(|s| s.ready_replicas)
+            .unwrap_or(0)
+            .to_string(),
+    );
+    field(
+        &mut lines,
+        "Available",
+        &status
+            .and_then(|s| s.available_replicas)
+            .unwrap_or(0)
+            .to_string(),
+    );
+
+    section(&mut lines, "Pod Template");
+    if let Some(s) = spec {
+        multiline_labels(
+            &mut lines,
+            "  Labels",
+            s.template
+                .as_ref()
+                .and_then(|t| t.metadata.as_ref())
+                .and_then(|m| m.labels.as_ref()),
+        );
+        if let Some(pod_spec) = s.template.as_ref().and_then(|t| t.spec.as_ref()) {
+            for c in &pod_spec.containers {
+                lines.push(format!("  Container: {}", c.name));
+                field(
+                    &mut lines,
+                    "    Image",
+                    c.image.as_deref().unwrap_or("<none>"),
+                );
+            }
+        }
+    }
+
+    section(&mut lines, "Hints");
+    lines.push(format!(
+        "  kubectl describe replicaset/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push("".into());
+    lines.push("  Esc / q — close   ↑ ↓ — scroll".into());
+    lines
+}
+
+pub async fn describe_daemonset(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
+    let api: Api<DaemonSet> = match ns {
+        Some(n) => Api::namespaced(client.clone(), n),
+        None => Api::all(client.clone()),
+    };
+    let mut lines = Vec::new();
+
+    let ds = match api.get(name).await {
+        Ok(d) => d,
+        Err(e) => {
+            lines.push(format!("  Error fetching DaemonSet '{}': {}", name, e));
+            return lines;
+        }
+    };
+
+    let meta = &ds.metadata;
+    let spec = ds.spec.as_ref();
+    let status = ds.status.as_ref();
+
+    section(&mut lines, "Identity");
+    field(&mut lines, "Name", opt_str(&meta.name));
+    field(&mut lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        &mut lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
+
+    section(&mut lines, "Status");
+    field(
+        &mut lines,
+        "Desired",
+        &status
+            .map(|s| s.desired_number_scheduled)
+            .unwrap_or(0)
+            .to_string(),
+    );
+    field(
+        &mut lines,
+        "Current",
+        &status
+            .map(|s| s.current_number_scheduled)
+            .unwrap_or(0)
+            .to_string(),
+    );
+    field(
+        &mut lines,
+        "Ready",
+        &status.map(|s| s.number_ready).unwrap_or(0).to_string(),
+    );
+    field(
+        &mut lines,
+        "Available",
+        &status
+            .and_then(|s| s.number_available)
+            .unwrap_or(0)
+            .to_string(),
+    );
+    field(
+        &mut lines,
+        "Unavailable",
+        &status
+            .and_then(|s| s.number_unavailable)
+            .unwrap_or(0)
+            .to_string(),
+    );
+
+    section(&mut lines, "Pod Template");
+    if let Some(s) = spec {
+        if let Some(pod_spec) = &s.template.spec {
+            for c in &pod_spec.containers {
+                lines.push(format!("  Container: {}", c.name));
+                field(
+                    &mut lines,
+                    "    Image",
+                    c.image.as_deref().unwrap_or("<none>"),
+                );
+            }
+            multiline_labels(
+                &mut lines,
+                "  Node Selector",
+                pod_spec.node_selector.as_ref(),
+            );
+        }
+    }
+
+    section(&mut lines, "Hints");
+    lines.push(format!(
+        "  kubectl describe daemonset/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push("".into());
+    lines.push("  Esc / q — close   ↑ ↓ — scroll".into());
+    lines
+}
+
+pub async fn describe_job(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
+    let api: Api<Job> = match ns {
+        Some(n) => Api::namespaced(client.clone(), n),
+        None => Api::all(client.clone()),
+    };
+    let mut lines = Vec::new();
+
+    let j = match api.get(name).await {
+        Ok(j) => j,
+        Err(e) => {
+            lines.push(format!("  Error fetching Job '{}': {}", name, e));
+            return lines;
+        }
+    };
+
+    let meta = &j.metadata;
+    let spec = j.spec.as_ref();
+    let status = j.status.as_ref();
+
+    section(&mut lines, "Identity");
+    field(&mut lines, "Name", opt_str(&meta.name));
+    field(&mut lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        &mut lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
+
+    section(&mut lines, "Spec");
+    field(
+        &mut lines,
+        "Completions",
+        &spec.and_then(|s| s.completions).unwrap_or(1).to_string(),
+    );
+    field(
+        &mut lines,
+        "Parallelism",
+        &spec.and_then(|s| s.parallelism).unwrap_or(1).to_string(),
+    );
+    field(
+        &mut lines,
+        "BackoffLimit",
+        &spec.and_then(|s| s.backoff_limit).unwrap_or(6).to_string(),
+    );
+
+    section(&mut lines, "Status");
+    field(
+        &mut lines,
+        "Active",
+        &status.and_then(|s| s.active).unwrap_or(0).to_string(),
+    );
+    field(
+        &mut lines,
+        "Succeeded",
+        &status.and_then(|s| s.succeeded).unwrap_or(0).to_string(),
+    );
+    field(
+        &mut lines,
+        "Failed",
+        &status.and_then(|s| s.failed).unwrap_or(0).to_string(),
+    );
+    field(
+        &mut lines,
+        "Start time",
+        &status
+            .and_then(|s| s.start_time.as_ref())
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    field(
+        &mut lines,
+        "End time",
+        &status
+            .and_then(|s| s.completion_time.as_ref())
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+
+    section(&mut lines, "Conditions");
+    if let Some(conds) = status.and_then(|s| s.conditions.as_ref()) {
+        lines.push(format!("  {:<20}  {:<8}  {}", "Type", "Status", "Message"));
+        lines.push(format!("  {:<20}  {:<8}  {}", "────", "──────", "───────"));
+        for c in conds {
+            lines.push(format!(
+                "  {:<20}  {:<8}  {}",
+                c.type_,
+                c.status,
+                c.message.as_deref().unwrap_or("")
+            ));
+        }
+    }
+
+    section(&mut lines, "Hints");
+    lines.push(format!(
+        "  kubectl describe job/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+    lines.push("".into());
+    lines.push("  Esc / q — close   ↑ ↓ — scroll".into());
+    lines
+}
