@@ -649,11 +649,115 @@ pub async fn describe_pod(client: &Client, name: &str, ns: Option<&str>) -> Vec<
     lines
 }
 
+fn service_section_identity(lines: &mut Vec<String>, meta: &ObjectMeta) {
+    section(lines, "Identity");
+    field(lines, "Name", opt_str(&meta.name));
+    field(lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    multiline_labels(lines, "Labels", meta.labels.as_ref());
+    annotations_lines(lines, "Annotations", meta.annotations.as_ref());
+}
+
+fn service_section_spec(lines: &mut Vec<String>, svc: &Service) {
+    section(lines, "Spec");
+
+    let Some(spec) = &svc.spec else {
+        field(lines, "Spec", "<none>");
+        return;
+    };
+
+    field(lines, "Type", spec.type_.as_deref().unwrap_or("<none>"));
+    field(lines, "ClusterIP", spec.cluster_ip.as_deref().unwrap_or("<none>"));
+    multiline_labels(lines, "Selector", spec.selector.as_ref());
+
+    service_section_ports(lines, spec);
+    service_section_network(lines, spec, &svc.status);
+}
+
+fn service_section_ports(lines: &mut Vec<String>, spec: &k8s_openapi::api::core::v1::ServiceSpec) {
+    let Some(ports) = &spec.ports else {
+        field(lines, "Ports", "<none>");
+        return;
+    };
+
+    if ports.is_empty() {
+        field(lines, "Ports", "<none>");
+        return;
+    }
+
+    for (i, p) in ports.iter().enumerate() {
+        let proto = p.protocol.as_deref().unwrap_or("TCP");
+        let name = p.name.as_deref().unwrap_or("");
+
+        let target = p
+            .target_port
+            .as_ref()
+            .map(int_or_str)
+            .unwrap_or_else(|| p.port.to_string());
+
+        let node = p.node_port.map(|n| format!(" NodePort={}", n)).unwrap_or_default();
+
+        let line = format!("{}/{} {} -> {}{}", p.port, proto, name, target, node);
+
+        if i == 0 {
+            field(lines, "Ports", &line);
+        } else {
+            lines.push(format!("  {:<28}  {}", "", line));
+        }
+    }
+}
+
+fn service_section_network(
+    lines: &mut Vec<String>,
+    spec: &k8s_openapi::api::core::v1::ServiceSpec,
+    status: &Option<k8s_openapi::api::core::v1::ServiceStatus>,
+) {
+    let external_ips = spec
+        .external_ips
+        .as_ref()
+        .map(|v| v.join(", "))
+        .unwrap_or_else(|| "<none>".into());
+
+    field(lines, "External IPs", &external_ips);
+
+    if let Some(s) = status {
+        if let Some(lb) = &s.load_balancer {
+            if let Some(ing) = &lb.ingress {
+                let ips: Vec<_> = ing
+                    .iter()
+                    .filter_map(|i| i.ip.clone().or_else(|| i.hostname.clone()))
+                    .collect();
+
+                if !ips.is_empty() {
+                    field(lines, "LoadBalancer", &ips.join(", "));
+                }
+            }
+        }
+    }
+
+    if let Some(f) = &spec.ip_families {
+        field(lines, "IP Families", &f.join(", "));
+    }
+
+    if let Some(p) = &spec.ip_family_policy {
+        field(lines, "IP Policy", p);
+    }
+}
+
 pub async fn describe_service(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
     let api: Api<Service> = match ns {
         Some(n) => Api::namespaced(client.clone(), n),
         None => Api::all(client.clone()),
     };
+
     let mut lines = Vec::new();
 
     let svc = match api.get(name).await {
@@ -664,98 +768,8 @@ pub async fn describe_service(client: &Client, name: &str, ns: Option<&str>) -> 
         }
     };
 
-    let meta = &svc.metadata;
-    let spec = svc.spec.as_ref();
-
-    section(&mut lines, "Identity");
-    field(&mut lines, "Name", opt_str(&meta.name));
-    field(&mut lines, "Namespace", opt_str(&meta.namespace));
-    field(
-        &mut lines,
-        "Created",
-        &meta
-            .creation_timestamp
-            .as_ref()
-            .map(|t| t.0.to_rfc2822())
-            .unwrap_or_else(|| "<none>".into()),
-    );
-    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
-    annotations_lines(&mut lines, "Annotations", meta.annotations.as_ref());
-
-    section(&mut lines, "Spec");
-    if let Some(s) = spec {
-        field(&mut lines, "Type", s.type_.as_deref().unwrap_or("<none>"));
-        field(
-            &mut lines,
-            "ClusterIP",
-            s.cluster_ip.as_deref().unwrap_or("<none>"),
-        );
-        multiline_labels(&mut lines, "Selector", s.selector.as_ref());
-
-        if let Some(ps) = &s.ports {
-            if ps.is_empty() {
-                field(&mut lines, "Ports", "<none>");
-            } else {
-                for (i, p) in ps.iter().enumerate() {
-                    let proto = p.protocol.as_deref().unwrap_or("TCP");
-                    let name_part = p
-                        .name
-                        .as_ref()
-                        .map(|n| format!(" ({})", n))
-                        .unwrap_or_default();
-                    let target = p
-                        .target_port
-                        .as_ref()
-                        .map(int_or_str)
-                        .unwrap_or_else(|| p.port.to_string());
-                    let node_part = p
-                        .node_port
-                        .map(|np| format!("  NodePort: {}", np))
-                        .unwrap_or_default();
-                    let line = format!(
-                        "{}/{}{} -> {}{}",
-                        p.port, proto, name_part, target, node_part
-                    );
-                    if i == 0 {
-                        field(&mut lines, "Ports", &line);
-                    } else {
-                        lines.push(format!("  {:<28}  {}", "", line));
-                    }
-                }
-            }
-        } else {
-            field(&mut lines, "Ports", "<none>");
-        }
-
-        let external_ips = s
-            .external_ips
-            .as_ref()
-            .map(|v: &Vec<String>| v.join(", "))
-            .unwrap_or_else(|| "<none>".into());
-        field(&mut lines, "External IPs", &external_ips);
-
-        if let Some(status) = &svc.status {
-            if let Some(lb) = &status.load_balancer {
-                if let Some(ingresses) = &lb.ingress {
-                    if !ingresses.is_empty() {
-                        let ips = ingresses
-                            .iter()
-                            .filter_map(|i| i.ip.clone().or_else(|| i.hostname.clone()))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        field(&mut lines, "LoadBalancer Ingress", &ips);
-                    }
-                }
-            }
-        }
-
-        if let Some(families) = &s.ip_families {
-            field(&mut lines, "IP Families", &families.join(", "));
-        }
-        if let Some(policy) = &s.ip_family_policy {
-            field(&mut lines, "IP Family Policy", policy);
-        }
-    }
+    service_section_identity(&mut lines, &svc.metadata);
+    service_section_spec(&mut lines, &svc);
 
     section(&mut lines, "Hints");
     lines.push(format!(
@@ -768,8 +782,10 @@ pub async fn describe_service(client: &Client, name: &str, ns: Option<&str>) -> 
         name,
         ns.unwrap_or("default")
     ));
-    lines.push("".into());
+
+    lines.push(String::new());
     lines.push("  Esc / q — close   ↑ ↓ PgDn PgUp Home End — navigate".into());
+
     lines
 }
 
