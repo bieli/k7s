@@ -227,7 +227,7 @@ fn multiline_labels(
         None => field(lines, label, "<none>"),
         Some(m) if m.is_empty() => field(lines, label, "<none>"),
         Some(m) => {
-            let pairs: Vec<String> = m.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+            let pairs: Vec<String> = m.iter().map(|(k, v)| format!("{}  =  {}", k, v)).collect();
             field(lines, label, &pairs[0]);
             for p in &pairs[1..] {
                 lines.push(format!("  {:<28}  {}", "", p));
@@ -602,7 +602,7 @@ async fn describe_pod(client: &Client, name: &str, ns: Option<&str>) -> Vec<Stri
             .map(|t| t.0.to_rfc2822())
             .unwrap_or_else(|| "<none>".into()),
     );
-    field(&mut lines, "Labels", &labels_str(meta.labels.as_ref()));
+    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
     field(
         &mut lines,
         "Node",
@@ -901,7 +901,7 @@ async fn describe_replicaset(client: &Client, name: &str, ns: Option<&str>) -> V
             .map(|t| t.0.to_rfc2822())
             .unwrap_or_else(|| "<none>".into()),
     );
-    field(&mut lines, "Labels", &labels_str(meta.labels.as_ref()));
+    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
     let owner = meta
         .owner_references
         .as_ref()
@@ -944,13 +944,14 @@ async fn describe_replicaset(client: &Client, name: &str, ns: Option<&str>) -> V
 
     section(&mut lines, "Pod Template");
     if let Some(s) = spec {
-        let tmpl_labels = labels_str(
+        multiline_labels(
+            &mut lines,
+            "  Labels",
             s.template
                 .as_ref()
                 .and_then(|t| t.metadata.as_ref())
                 .and_then(|m| m.labels.as_ref()),
         );
-        field(&mut lines, "  Labels", &tmpl_labels);
         if let Some(pod_spec) = s.template.as_ref().and_then(|t| t.spec.as_ref()) {
             for c in &pod_spec.containers {
                 lines.push(format!("  Container: {}", c.name));
@@ -1005,7 +1006,7 @@ async fn describe_daemonset(client: &Client, name: &str, ns: Option<&str>) -> Ve
             .map(|t| t.0.to_rfc2822())
             .unwrap_or_else(|| "<none>".into()),
     );
-    field(&mut lines, "Labels", &labels_str(meta.labels.as_ref()));
+    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
 
     section(&mut lines, "Status");
     field(
@@ -1057,10 +1058,10 @@ async fn describe_daemonset(client: &Client, name: &str, ns: Option<&str>) -> Ve
                     c.image.as_deref().unwrap_or("<none>"),
                 );
             }
-            field(
+            multiline_labels(
                 &mut lines,
                 "  Node Selector",
-                &labels_str(pod_spec.node_selector.as_ref()),
+                pod_spec.node_selector.as_ref(),
             );
         }
     }
@@ -1107,7 +1108,7 @@ async fn describe_job(client: &Client, name: &str, ns: Option<&str>) -> Vec<Stri
             .map(|t| t.0.to_rfc2822())
             .unwrap_or_else(|| "<none>".into()),
     );
-    field(&mut lines, "Labels", &labels_str(meta.labels.as_ref()));
+    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
 
     section(&mut lines, "Spec");
     field(
