@@ -182,44 +182,46 @@ fn int_or_str(v: &k8s_openapi::apimachinery::pkg::util::intstr::IntOrString) -> 
     }
 }
 
+fn is_json_blob(v: &str) -> bool {
+    let t = v.trim();
+    (t.starts_with('{') && t.ends_with('}')) || (t.starts_with('[') && t.ends_with(']'))
+}
+
+fn truncate(v: &str) -> String {
+    const MAX: usize = 120;
+    v.get(..MAX).map(|s| format!("{}…", s)).unwrap_or_else(|| v.to_string())
+}
+
+fn annotation_display(label: &str, key: &str, value: &str, first: bool) -> String {
+    let display = format!("{}: {}", key, truncate(value));
+    if first {
+        format!("  {:<28}  {}", label, display)
+    } else {
+        format!("  {:<28}  {}", "", display)
+    }
+}
+
 fn annotations_lines(
     lines: &mut Vec<String>,
     label: &str,
     anns: Option<&std::collections::BTreeMap<String, String>>,
 ) {
-    fn is_json_blob(v: &str) -> bool {
-        let t = v.trim();
-        (t.starts_with('{') && t.ends_with('}')) || (t.starts_with('[') && t.ends_with(']'))
+    let visible: Vec<_> = match anns {
+        None => { field(lines, label, "<none>"); return; }
+        Some(map) => map.iter().filter(|(_, v)| !is_json_blob(v)).collect(),
+    };
+
+    if visible.is_empty() {
+        field(lines, label, "<none>");
+        return;
     }
 
-    fn truncate(v: &str) -> String {
-        const MAX: usize = 120;
-        if v.len() > MAX {
-            format!("{}...", &v[..MAX])
-        } else {
-            v.to_string()
-        }
-    }
-
-    match anns {
-        None => field(lines, label, "<none>"),
-        Some(map) => {
-            let visible: Vec<_> = map.iter().filter(|(_, v)| !is_json_blob(v)).collect();
-            if visible.is_empty() {
-                field(lines, label, "<none>");
-            } else {
-                for (i, (k, v)) in visible.iter().enumerate() {
-                    let display = format!("{}: {}", k, truncate(v));
-                    if i == 0 {
-                        field(lines, label, &display);
-                    } else {
-                        lines.push(format!("  {:<28}  {}", "", display));
-                    }
-                }
-            }
-        }
-    }
+    lines.extend(
+        visible.iter().enumerate()
+            .map(|(i, (k, v))| annotation_display(label, k, v, i == 0))
+    );
 }
+
 
 fn multiline_labels(
     lines: &mut Vec<String>,
