@@ -90,10 +90,11 @@ There are different architectures binaries, to support you in selection you can 
 Below architectures were testet on physical machines:
 | architecture | library | prefixed name in release | physical machine / SBC |
 |--------------|---------|--------------------------|-----------------------|
-| ARMv7l / ARMv7 Processor rev 4 (v7l)  | musl    | k7s-arm-unknown-linux-gnueabihf | BananaPI PRO   |
 | Intel(R) Core(TM) i7 | glibc GLIBC_2.32, GLIBC_2.33, GLIBC_2.34, GLIBC_2.39 | k7s-x86_64-unknown-linux-gnu | Intel CORE i7 |
-| AMD Ryzen 5 | glibc GLIBC_2.39 | k7s-x86_64-unknown-linux-gnu | AMD Ryzen 5 3600 |
-| AMD EPYC-Rome Processor  | glibc GLIBC_2.39 | k7s-x86_64-unknown-linux-gnu | AMD EPYC 7272 Zen2 |
+| AMD Ryzen 5 | glibc GLIBC_2.39 | `k7s-x86_64-unknown-linux-gnu` | AMD Ryzen 5 3600 |
+| AMD EPYC-Rome Processor  | glibc GLIBC_2.39 | `k7s-x86_64-unknown-linux-gnu` | AMD EPYC 7272 Zen2 |
+| ARMv7l / ARMv7 Processor rev 4 (v7l) / Cortex-A7  | musl | `k7s-arm-unknown-linux-gnueabihf` | BananaPI PRO |
+| ARMv8-A / aarch64 / Cortex-A53  | musl | `k7s-aarch64-unknown-linux-musl` | Raspberry Pi 3 Model B Rev 1.2 |
 
 #### How to deploy and run `k7s` on your OS
 ```bash
