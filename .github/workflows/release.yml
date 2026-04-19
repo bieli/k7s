@@ -39,6 +39,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      
+      - name: Verify version matches tag
+        if: runner.os != 'Windows'
+        run: |
+          CARGO_VERSION="v$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')"
+          TAG_VERSION="${GITHUB_REF#refs/tags/}"
+          echo "Cargo version: $CARGO_VERSION"
+          echo "Git tag:       $TAG_VERSION"
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "ERROR: Cargo.toml version ($CARGO_VERSION) does not match git tag ($TAG_VERSION)"
+            exit 1
+          fi
+        shell: bash
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
