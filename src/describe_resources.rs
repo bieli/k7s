@@ -1,6 +1,9 @@
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet};
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{Pod, Service};
+use k8s_openapi::api::core::v1::{
+    ContainerState, ContainerStatus, Pod, PodSpec, PodStatus, Service,
+};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::Api;
 use kube::Client;
 use std::collections::BTreeMap;
@@ -460,6 +463,155 @@ fn toleration_str(t: &k8s_openapi::api::core::v1::Toleration) -> String {
     }
 }
 
+fn pod_section_identity(lines: &mut Vec<String>, meta: &ObjectMeta, spec: Option<&PodSpec>) {
+    section(lines, "Identity");
+    field(lines, "Name", opt_str(&meta.name));
+    field(lines, "Namespace", opt_str(&meta.namespace));
+    field(
+        lines,
+        "Created",
+        &meta
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+    multiline_labels(lines, "Labels", meta.labels.as_ref());
+    field(
+        lines,
+        "Node",
+        spec.and_then(|s| s.node_name.as_deref())
+            .unwrap_or("<none>"),
+    );
+    field(
+        lines,
+        "ServiceAccount",
+        spec.and_then(|s| s.service_account_name.as_deref())
+            .unwrap_or("<none>"),
+    );
+}
+
+fn pod_section_status(lines: &mut Vec<String>, status: Option<&PodStatus>) {
+    section(lines, "Status");
+    field(
+        lines,
+        "Phase",
+        status.and_then(|s| s.phase.as_deref()).unwrap_or("<none>"),
+    );
+    field(
+        lines,
+        "Pod IP",
+        status.and_then(|s| s.pod_ip.as_deref()).unwrap_or("<none>"),
+    );
+    field(
+        lines,
+        "Host IP",
+        status
+            .and_then(|s| s.host_ip.as_deref())
+            .unwrap_or("<none>"),
+    );
+}
+
+fn format_pod_container_ports(c: &k8s_openapi::api::core::v1::Container) -> String {
+    c.ports
+        .as_ref()
+        .map(|ps| {
+            ps.iter()
+                .map(|p| {
+                    format!(
+                        "{}/{}",
+                        p.container_port,
+                        p.protocol.as_deref().unwrap_or("TCP")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "<none>".into())
+}
+
+fn format_pod_container_limits(c: &k8s_openapi::api::core::v1::Container) -> String {
+    c.resources
+        .as_ref()
+        .and_then(|r| r.limits.as_ref())
+        .map(|l| {
+            l.iter()
+                .map(|(k, v)| format!("{}={}", k, v.0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "<none>".into())
+}
+
+fn pod_section_containers(lines: &mut Vec<String>, spec: Option<&PodSpec>) {
+    section(lines, "Containers");
+    spec.map(|s| {
+        s.containers.iter().for_each(|c| {
+            lines.push(format!("  Container: {}", c.name));
+            field(lines, "    Image", c.image.as_deref().unwrap_or("<none>"));
+            field(lines, "    Ports", &format_pod_container_ports(c));
+            field(lines, "    Limits", &format_pod_container_limits(c));
+        })
+    });
+}
+
+fn format_container_state(state: &ContainerState) -> String {
+    if let Some(r) = &state.running {
+        return format!(
+            "Running since {}",
+            r.started_at
+                .as_ref()
+                .map(|t| t.0.to_rfc2822())
+                .unwrap_or_else(|| "?".into())
+        );
+    }
+    if let Some(w) = &state.waiting {
+        return format!("Waiting — {}", w.reason.as_deref().unwrap_or("?"));
+    }
+    if let Some(t) = &state.terminated {
+        return format!(
+            "Terminated — exit {} ({})",
+            t.exit_code,
+            t.reason.as_deref().unwrap_or("?")
+        );
+    }
+    "<unknown>".into()
+}
+
+fn pod_container_status_lines(lines: &mut Vec<String>, cs: &ContainerStatus) {
+    lines.push(format!("  Container: {}", cs.name));
+    field(lines, "    Ready", &cs.ready.to_string());
+    field(lines, "    Restart count", &cs.restart_count.to_string());
+    field(lines, "    Image", &cs.image);
+    cs.state
+        .as_ref()
+        .map(|st| field(lines, "    State", &format_container_state(st)));
+}
+
+fn pod_section_container_statuses(lines: &mut Vec<String>, status: Option<&PodStatus>) {
+    section(lines, "Container Statuses");
+    status
+        .and_then(|s| s.container_statuses.as_ref())
+        .map(|cs_list| {
+            cs_list
+                .iter()
+                .for_each(|cs| pod_container_status_lines(lines, cs))
+        });
+}
+
+fn pod_section_conditions(lines: &mut Vec<String>, status: Option<&PodStatus>) {
+    section(lines, "Conditions");
+    let conds = match status.and_then(|s| s.conditions.as_ref()) {
+        Some(c) => c,
+        None => return,
+    };
+    lines.push(format!("  {:<24}  {}", "Type", "Status"));
+    lines.push(format!("  {:<24}  {}", "────", "──────"));
+    conds
+        .iter()
+        .for_each(|c| lines.push(format!("  {:<24}  {}", c.type_, c.status)));
+}
+
 pub async fn describe_pod(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
     let api: Api<Pod> = match ns {
         Some(n) => Api::namespaced(client.clone(), n),
@@ -475,149 +627,11 @@ pub async fn describe_pod(client: &Client, name: &str, ns: Option<&str>) -> Vec<
         }
     };
 
-    let meta = &p.metadata;
-    let spec = p.spec.as_ref();
-    let status = p.status.as_ref();
-
-    section(&mut lines, "Identity");
-    field(&mut lines, "Name", opt_str(&meta.name));
-    field(&mut lines, "Namespace", opt_str(&meta.namespace));
-    field(
-        &mut lines,
-        "Created",
-        &meta
-            .creation_timestamp
-            .as_ref()
-            .map(|t| t.0.to_rfc2822())
-            .unwrap_or_else(|| "<none>".into()),
-    );
-    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
-    field(
-        &mut lines,
-        "Node",
-        spec.and_then(|s| s.node_name.as_deref())
-            .unwrap_or("<none>"),
-    );
-    field(
-        &mut lines,
-        "ServiceAccount",
-        spec.and_then(|s| s.service_account_name.as_deref())
-            .unwrap_or("<none>"),
-    );
-
-    section(&mut lines, "Status");
-    field(
-        &mut lines,
-        "Phase",
-        status.and_then(|s| s.phase.as_deref()).unwrap_or("<none>"),
-    );
-    field(
-        &mut lines,
-        "Pod IP",
-        status.and_then(|s| s.pod_ip.as_deref()).unwrap_or("<none>"),
-    );
-    field(
-        &mut lines,
-        "Host IP",
-        status
-            .and_then(|s| s.host_ip.as_deref())
-            .unwrap_or("<none>"),
-    );
-
-    section(&mut lines, "Containers");
-    if let Some(s) = spec {
-        for c in &s.containers {
-            lines.push(format!("  Container: {}", c.name));
-            field(
-                &mut lines,
-                "    Image",
-                c.image.as_deref().unwrap_or("<none>"),
-            );
-            let ports = c
-                .ports
-                .as_ref()
-                .map(|ps| {
-                    ps.iter()
-                        .map(|p| {
-                            format!(
-                                "{}/{}",
-                                p.container_port,
-                                p.protocol.as_deref().unwrap_or("TCP")
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_else(|| "<none>".into());
-            field(&mut lines, "    Ports", &ports);
-            let limits = c
-                .resources
-                .as_ref()
-                .and_then(|r| r.limits.as_ref())
-                .map(|l| {
-                    l.iter()
-                        .map(|(k, v)| format!("{}={}", k, v.0))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_else(|| "<none>".into());
-            field(&mut lines, "    Limits", &limits);
-        }
-    }
-
-    section(&mut lines, "Container Statuses");
-    if let Some(cs_list) = status.and_then(|s| s.container_statuses.as_ref()) {
-        for cs in cs_list {
-            lines.push(format!("  Container: {}", cs.name));
-            field(&mut lines, "    Ready", &cs.ready.to_string());
-            field(
-                &mut lines,
-                "    Restart count",
-                &cs.restart_count.to_string(),
-            );
-            field(&mut lines, "    Image", &cs.image);
-            if let Some(state) = &cs.state {
-                if let Some(r) = &state.running {
-                    field(
-                        &mut lines,
-                        "    State",
-                        &format!(
-                            "Running since {}",
-                            r.started_at
-                                .as_ref()
-                                .map(|t| t.0.to_rfc2822())
-                                .unwrap_or_else(|| "?".into())
-                        ),
-                    );
-                } else if let Some(w) = &state.waiting {
-                    field(
-                        &mut lines,
-                        "    State",
-                        &format!("Waiting — {}", w.reason.as_deref().unwrap_or("?")),
-                    );
-                } else if let Some(t) = &state.terminated {
-                    field(
-                        &mut lines,
-                        "    State",
-                        &format!(
-                            "Terminated — exit {} ({})",
-                            t.exit_code,
-                            t.reason.as_deref().unwrap_or("?")
-                        ),
-                    );
-                }
-            }
-        }
-    }
-
-    section(&mut lines, "Conditions");
-    if let Some(conds) = status.and_then(|s| s.conditions.as_ref()) {
-        lines.push(format!("  {:<24}  {}", "Type", "Status"));
-        lines.push(format!("  {:<24}  {}", "────", "──────"));
-        for c in conds {
-            lines.push(format!("  {:<24}  {}", c.type_, c.status));
-        }
-    }
+    pod_section_identity(&mut lines, &p.metadata, p.spec.as_ref());
+    pod_section_status(&mut lines, p.status.as_ref());
+    pod_section_containers(&mut lines, p.spec.as_ref());
+    pod_section_container_statuses(&mut lines, p.status.as_ref());
+    pod_section_conditions(&mut lines, p.status.as_ref());
 
     section(&mut lines, "Hints");
     lines.push(format!(
@@ -631,7 +645,7 @@ pub async fn describe_pod(client: &Client, name: &str, ns: Option<&str>) -> Vec<
         ns.unwrap_or("default")
     ));
     lines.push("".into());
-    lines.push("  Esc / q — close   ↑ ↓ — scroll".into());
+    lines.push("  Esc / q — close   ↑ ↓ PgDn PgUp Home End — navigate".into());
     lines
 }
 
