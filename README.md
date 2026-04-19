@@ -108,6 +108,7 @@ Below architectures were testet on physical machines:
 | AMD EPYC-Rome Processor  | glibc GLIBC_2.39 | `k7s-x86_64-unknown-linux-gnu` | AMD EPYC 7272 Zen2 |
 | ARMv7l / ARMv7 Processor rev 4 (v7l) / Cortex-A7  | musl | `k7s-arm-unknown-linux-gnueabihf` | BananaPI PRO |
 | ARMv8-A / aarch64 / Cortex-A53  | musl | `k7s-aarch64-unknown-linux-musl` | Raspberry Pi 3 Model B Rev 1.2 |
+| Apple SIlicon M | apple | `k7s-aarch64-apple-darwin` | Apple M4 Max |
 
 #### How to deploy and run `k7s` on your OS
 ```bash
