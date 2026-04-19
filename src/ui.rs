@@ -1,7 +1,7 @@
 use crate::app::PaneConfig;
 use crate::app::{
-    App, APP_HEADER_TITLE, APP_HEADER_TITLE_K8S_VER, APP_HEADER_TITLE_LEFT,
-    APP_HEADER_TITLE_RIGHT, DetailModal, PANE_CONFIGS,
+    App, DetailModal, APP_HEADER_TITLE, APP_HEADER_TITLE_K8S_VER, APP_HEADER_TITLE_LEFT,
+    APP_HEADER_TITLE_RIGHT, PANE_CONFIGS,
 };
 use crate::resources::ResourceRow;
 use ratatui::{
@@ -24,11 +24,15 @@ struct Styles;
 
 impl Styles {
     fn header_left() -> Style {
-        Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan)
+        Style::default()
+            .add_modifier(Modifier::BOLD)
+            .fg(Color::Cyan)
     }
 
     fn header_title() -> Style {
-        Style::default().add_modifier(Modifier::BOLD).fg(Color::White)
+        Style::default()
+            .add_modifier(Modifier::BOLD)
+            .fg(Color::White)
     }
 
     fn header_meta() -> Style {
@@ -73,10 +77,8 @@ fn render_header(ctx: &mut UiCtx, area: Rect) {
         Span::styled(APP_HEADER_TITLE_RIGHT, Styles::header_left()),
     ]);
 
-    ctx.frame.render_widget(
-        Paragraph::new(line).alignment(Alignment::Center),
-        area,
-    );
+    ctx.frame
+        .render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
 fn render_namespaces(ctx: &mut UiCtx, area: Rect) {
@@ -88,7 +90,9 @@ fn render_namespaces(ctx: &mut UiCtx, area: Rect) {
         .enumerate()
         .map(|(i, n)| {
             let style = if i == app.selected_ns_index {
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -128,7 +132,6 @@ fn render_panes(ctx: &mut UiCtx, area: Rect) {
         render_table_pane(ctx, cfg, *area);
     }
 }
-
 
 struct TableRender<'a> {
     area: Rect,
@@ -177,8 +180,11 @@ fn render_table(f: &mut Frame, cfg: TableRender) {
 
     let table = Table::new(rows, cfg.constraints)
         .header(
-            Row::new(cfg.headers.iter().map(|h| Cell::from(*h)))
-                .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Row::new(cfg.headers.iter().map(|h| Cell::from(*h))).style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         )
         .block(
             Block::default()
@@ -227,8 +233,7 @@ fn render_detail(f: &mut Frame, detail: &mut DetailModal) {
         .map(|l| Line::from(Span::raw(l.clone())))
         .collect();
 
-    let mut scrollbar_state =
-        ScrollbarState::new(detail.lines.len()).position(detail.scroll);
+    let mut scrollbar_state = ScrollbarState::new(detail.lines.len()).position(detail.scroll);
 
     f.render_widget(Clear, area);
 
@@ -250,4 +255,3 @@ fn render_detail(f: &mut Frame, detail: &mut DetailModal) {
         &mut scrollbar_state,
     );
 }
-

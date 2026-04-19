@@ -79,26 +79,6 @@ fn field(lines: &mut Vec<String>, label: &str, value: &str) {
     lines.push(format!("  {:<28}  {}", label, value));
 }
 
-fn deployment_section_identity(
-    lines: &mut Vec<String>,
-    meta: &k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
-) {
-    section(lines, "Identity");
-    field(lines, "Name", opt_str(&meta.name));
-    field(lines, "Namespace", opt_str(&meta.namespace));
-    field(
-        lines,
-        "Created",
-        &meta
-            .creation_timestamp
-            .as_ref()
-            .map(|t| t.0.to_rfc2822())
-            .unwrap_or_else(|| "<none>".into()),
-    );
-    multiline_labels(lines, "Labels", meta.labels.as_ref());
-    annotations_lines(lines, "Annotations", meta.annotations.as_ref());
-}
-
 fn deployment_section_spec(
     lines: &mut Vec<String>,
     spec: &k8s_openapi::api::apps::v1::DeploymentSpec,
@@ -363,7 +343,8 @@ pub async fn describe_deployment(client: &Client, name: &str, ns: Option<&str>) 
         }
     };
 
-    deployment_section_identity(&mut lines, &d.metadata);
+    section_identity(&mut lines, &d.metadata);
+
     if let Some(spec) = d.spec.as_ref() {
         deployment_section_spec(&mut lines, spec, d.status.as_ref());
         deployment_section_pod_template(&mut lines, spec);
@@ -461,34 +442,6 @@ fn toleration_str(t: &k8s_openapi::api::core::v1::Toleration) -> String {
     } else {
         format!("{}:{} ({})", key, effect, op)
     }
-}
-
-fn pod_section_identity(lines: &mut Vec<String>, meta: &ObjectMeta, spec: Option<&PodSpec>) {
-    section(lines, "Identity");
-    field(lines, "Name", opt_str(&meta.name));
-    field(lines, "Namespace", opt_str(&meta.namespace));
-    field(
-        lines,
-        "Created",
-        &meta
-            .creation_timestamp
-            .as_ref()
-            .map(|t| t.0.to_rfc2822())
-            .unwrap_or_else(|| "<none>".into()),
-    );
-    multiline_labels(lines, "Labels", meta.labels.as_ref());
-    field(
-        lines,
-        "Node",
-        spec.and_then(|s| s.node_name.as_deref())
-            .unwrap_or("<none>"),
-    );
-    field(
-        lines,
-        "ServiceAccount",
-        spec.and_then(|s| s.service_account_name.as_deref())
-            .unwrap_or("<none>"),
-    );
 }
 
 fn pod_section_status(lines: &mut Vec<String>, status: Option<&PodStatus>) {
@@ -627,7 +580,24 @@ pub async fn describe_pod(client: &Client, name: &str, ns: Option<&str>) -> Vec<
         }
     };
 
-    pod_section_identity(&mut lines, &p.metadata, p.spec.as_ref());
+    section_identity(&mut lines, &p.metadata);
+
+    field(
+        &mut lines,
+        "Node",
+        p.spec
+            .as_ref()
+            .and_then(|s| s.node_name.as_deref())
+            .unwrap_or("<none>"),
+    );
+    field(
+        &mut lines,
+        "ServiceAccount",
+        p.spec
+            .as_ref()
+            .and_then(|s| s.service_account_name.as_deref())
+            .unwrap_or("<none>"),
+    );
     pod_section_status(&mut lines, p.status.as_ref());
     pod_section_containers(&mut lines, p.spec.as_ref());
     pod_section_container_statuses(&mut lines, p.status.as_ref());
@@ -649,7 +619,7 @@ pub async fn describe_pod(client: &Client, name: &str, ns: Option<&str>) -> Vec<
     lines
 }
 
-fn service_section_identity(lines: &mut Vec<String>, meta: &ObjectMeta) {
+fn section_identity(lines: &mut Vec<String>, meta: &ObjectMeta) {
     section(lines, "Identity");
     field(lines, "Name", opt_str(&meta.name));
     field(lines, "Namespace", opt_str(&meta.namespace));
@@ -664,6 +634,18 @@ fn service_section_identity(lines: &mut Vec<String>, meta: &ObjectMeta) {
     );
     multiline_labels(lines, "Labels", meta.labels.as_ref());
     annotations_lines(lines, "Annotations", meta.annotations.as_ref());
+
+    let owner = meta
+        .owner_references
+        .as_ref()
+        .map(|o| {
+            o.iter()
+                .map(|r| format!("{}/{}", r.kind, r.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "<none>".into());
+    field(lines, "Owned by", &owner);
 }
 
 fn service_section_spec(lines: &mut Vec<String>, svc: &Service) {
@@ -675,7 +657,11 @@ fn service_section_spec(lines: &mut Vec<String>, svc: &Service) {
     };
 
     field(lines, "Type", spec.type_.as_deref().unwrap_or("<none>"));
-    field(lines, "ClusterIP", spec.cluster_ip.as_deref().unwrap_or("<none>"));
+    field(
+        lines,
+        "ClusterIP",
+        spec.cluster_ip.as_deref().unwrap_or("<none>"),
+    );
     multiline_labels(lines, "Selector", spec.selector.as_ref());
 
     service_section_ports(lines, spec);
@@ -703,7 +689,10 @@ fn service_section_ports(lines: &mut Vec<String>, spec: &k8s_openapi::api::core:
             .map(int_or_str)
             .unwrap_or_else(|| p.port.to_string());
 
-        let node = p.node_port.map(|n| format!(" NodePort={}", n)).unwrap_or_default();
+        let node = p
+            .node_port
+            .map(|n| format!(" NodePort={}", n))
+            .unwrap_or_default();
 
         let line = format!("{}/{} {} -> {}{}", p.port, proto, name, target, node);
 
@@ -768,7 +757,7 @@ pub async fn describe_service(client: &Client, name: &str, ns: Option<&str>) -> 
         }
     };
 
-    service_section_identity(&mut lines, &svc.metadata);
+    section_identity(&mut lines, &svc.metadata);
     service_section_spec(&mut lines, &svc);
 
     section(&mut lines, "Hints");
@@ -808,30 +797,7 @@ pub async fn describe_replicaset(client: &Client, name: &str, ns: Option<&str>) 
     let spec = rs.spec.as_ref();
     let status = rs.status.as_ref();
 
-    section(&mut lines, "Identity");
-    field(&mut lines, "Name", opt_str(&meta.name));
-    field(&mut lines, "Namespace", opt_str(&meta.namespace));
-    field(
-        &mut lines,
-        "Created",
-        &meta
-            .creation_timestamp
-            .as_ref()
-            .map(|t| t.0.to_rfc2822())
-            .unwrap_or_else(|| "<none>".into()),
-    );
-    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
-    let owner = meta
-        .owner_references
-        .as_ref()
-        .map(|o| {
-            o.iter()
-                .map(|r| format!("{}/{}", r.kind, r.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_else(|| "<none>".into());
-    field(&mut lines, "Owned by", &owner);
+    section_identity(&mut lines, &meta);
 
     section(&mut lines, "Replicas");
     field(
@@ -913,19 +879,7 @@ pub async fn describe_daemonset(client: &Client, name: &str, ns: Option<&str>) -
     let spec = ds.spec.as_ref();
     let status = ds.status.as_ref();
 
-    section(&mut lines, "Identity");
-    field(&mut lines, "Name", opt_str(&meta.name));
-    field(&mut lines, "Namespace", opt_str(&meta.namespace));
-    field(
-        &mut lines,
-        "Created",
-        &meta
-            .creation_timestamp
-            .as_ref()
-            .map(|t| t.0.to_rfc2822())
-            .unwrap_or_else(|| "<none>".into()),
-    );
-    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
+    section_identity(&mut lines, &meta);
 
     section(&mut lines, "Status");
     field(
@@ -1015,19 +969,7 @@ pub async fn describe_job(client: &Client, name: &str, ns: Option<&str>) -> Vec<
     let spec = j.spec.as_ref();
     let status = j.status.as_ref();
 
-    section(&mut lines, "Identity");
-    field(&mut lines, "Name", opt_str(&meta.name));
-    field(&mut lines, "Namespace", opt_str(&meta.namespace));
-    field(
-        &mut lines,
-        "Created",
-        &meta
-            .creation_timestamp
-            .as_ref()
-            .map(|t| t.0.to_rfc2822())
-            .unwrap_or_else(|| "<none>".into()),
-    );
-    multiline_labels(&mut lines, "Labels", meta.labels.as_ref());
+    section_identity(&mut lines, &meta);
 
     section(&mut lines, "Spec");
     field(
