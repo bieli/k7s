@@ -184,19 +184,33 @@ fn annotations_lines(
     label: &str,
     anns: Option<&std::collections::BTreeMap<String, String>>,
 ) {
-    const SKIP: &str = "kubectl.kubernetes.io/last-applied-configuration";
+    fn is_json_blob(v: &str) -> bool {
+        let t = v.trim();
+        (t.starts_with('{') && t.ends_with('}')) || (t.starts_with('[') && t.ends_with(']'))
+    }
+
+    fn truncate(v: &str) -> String {
+        const MAX: usize = 120;
+        if v.len() > MAX {
+            format!("{}...", &v[..MAX])
+        } else {
+            v.to_string()
+        }
+    }
+
     match anns {
         None => field(lines, label, "<none>"),
         Some(map) => {
-            let visible: Vec<_> = map.iter().filter(|(k, _)| k.as_str() != SKIP).collect();
+            let visible: Vec<_> = map.iter().filter(|(_, v)| !is_json_blob(v)).collect();
             if visible.is_empty() {
                 field(lines, label, "<none>");
             } else {
                 for (i, (k, v)) in visible.iter().enumerate() {
+                    let display = format!("{}: {}", k, truncate(v));
                     if i == 0 {
-                        field(lines, label, &format!("{}: {}", k, v));
+                        field(lines, label, &display);
                     } else {
-                        lines.push(format!("  {:<28}  {}: {}", "", k, v));
+                        lines.push(format!("  {:<28}  {}", "", display));
                     }
                 }
             }
@@ -1351,7 +1365,7 @@ async fn main() -> Result<()> {
 
                             app.detail = Some(DetailModal {
                                 title: format!(" ✦ {} — {} ", cfg.title, name),
-                                lines: vec!["  Loading …".into()],
+                                lines: vec!["  Loading...".into()],
                                 scroll: 0,
                                 visible_height: 0,
                             });
