@@ -66,12 +66,17 @@ fn annotations_lines(
     );
 }
 
-fn section(lines: &mut Vec<String>, title: &str) {
+fn section(lines: &mut Vec<String>, title: &str, is_bold: bool) {
+    let mut line_char: &str = "─";
+    if is_bold {
+        line_char = "━";
+    }
     lines.push("".into());
     lines.push(format!(
-        "━━━ {} {}",
+        "{} {} {}",
+        line_char.repeat(3),
         title,
-        "━".repeat(54_usize.saturating_sub(title.len()))
+        line_char.repeat(54_usize.saturating_sub(title.len()))
     ));
 }
 
@@ -84,7 +89,7 @@ fn deployment_section_spec(
     spec: &k8s_openapi::api::apps::v1::DeploymentSpec,
     status: Option<&k8s_openapi::api::apps::v1::DeploymentStatus>,
 ) {
-    section(lines, "Spec");
+    section(lines, "Spec", true);
     multiline_labels(lines, "Selector", spec.selector.match_labels.as_ref());
 
     let desired = spec.replicas.unwrap_or(1);
@@ -265,7 +270,7 @@ fn deployment_section_pod_template(
     lines: &mut Vec<String>,
     spec: &k8s_openapi::api::apps::v1::DeploymentSpec,
 ) {
-    section(lines, "Pod Template");
+    section(lines, "Pod Template", true);
     multiline_labels(
         lines,
         "  Labels",
@@ -311,7 +316,7 @@ fn deployment_section_conditions(
     lines: &mut Vec<String>,
     status: Option<&k8s_openapi::api::apps::v1::DeploymentStatus>,
 ) {
-    section(lines, "Conditions");
+    section(lines, "Conditions", true);
     let conds = match status.and_then(|s| s.conditions.as_ref()) {
         Some(c) => c,
         None => return,
@@ -351,7 +356,7 @@ pub async fn describe_deployment(client: &Client, name: &str, ns: Option<&str>) 
     }
     deployment_section_conditions(&mut lines, d.status.as_ref());
 
-    section(&mut lines, "Hints");
+    section(&mut lines, "Hints", true);
     lines.push(format!(
         "  kubectl describe deployment/{} -n {}",
         name,
@@ -362,8 +367,7 @@ pub async fn describe_deployment(client: &Client, name: &str, ns: Option<&str>) 
         name,
         ns.unwrap_or("default")
     ));
-    lines.push("".into());
-    lines.push("  Esc / q — close   ↑ ↓ PgDn PgUp Home End — navigate".into());
+    bottom_section(&mut lines);
     lines
 }
 
@@ -445,7 +449,7 @@ fn toleration_str(t: &k8s_openapi::api::core::v1::Toleration) -> String {
 }
 
 fn pod_section_status(lines: &mut Vec<String>, status: Option<&PodStatus>) {
-    section(lines, "Status");
+    section(lines, "Status", true);
     field(
         lines,
         "Phase",
@@ -497,7 +501,7 @@ fn format_pod_container_limits(c: &k8s_openapi::api::core::v1::Container) -> Str
 }
 
 fn pod_section_containers(lines: &mut Vec<String>, spec: Option<&PodSpec>) {
-    section(lines, "Containers");
+    section(lines, "Containers", true);
     spec.map(|s| {
         s.containers.iter().for_each(|c| {
             lines.push(format!("  Container: {}", c.name));
@@ -542,7 +546,7 @@ fn pod_container_status_lines(lines: &mut Vec<String>, cs: &ContainerStatus) {
 }
 
 fn pod_section_container_statuses(lines: &mut Vec<String>, status: Option<&PodStatus>) {
-    section(lines, "Container Statuses");
+    section(lines, "Container Statuses", true);
     status
         .and_then(|s| s.container_statuses.as_ref())
         .map(|cs_list| {
@@ -553,7 +557,7 @@ fn pod_section_container_statuses(lines: &mut Vec<String>, status: Option<&PodSt
 }
 
 fn pod_section_conditions(lines: &mut Vec<String>, status: Option<&PodStatus>) {
-    section(lines, "Conditions");
+    section(lines, "Conditions", true);
     let conds = match status.and_then(|s| s.conditions.as_ref()) {
         Some(c) => c,
         None => return,
@@ -603,7 +607,7 @@ pub async fn describe_pod(client: &Client, name: &str, ns: Option<&str>) -> Vec<
     pod_section_container_statuses(&mut lines, p.status.as_ref());
     pod_section_conditions(&mut lines, p.status.as_ref());
 
-    section(&mut lines, "Hints");
+    section(&mut lines, "Hints", true);
     lines.push(format!(
         "  kubectl describe pod/{} -n {}",
         name,
@@ -614,13 +618,12 @@ pub async fn describe_pod(client: &Client, name: &str, ns: Option<&str>) -> Vec<
         name,
         ns.unwrap_or("default")
     ));
-    lines.push("".into());
-    lines.push("  Esc / q — close   ↑ ↓ PgDn PgUp Home End — navigate".into());
+    bottom_section(&mut lines);
     lines
 }
 
 fn section_identity(lines: &mut Vec<String>, meta: &ObjectMeta) {
-    section(lines, "Identity");
+    section(lines, "Identity", true);
     field(lines, "Name", opt_str(&meta.name));
     field(lines, "Namespace", opt_str(&meta.namespace));
     field(
@@ -649,7 +652,7 @@ fn section_identity(lines: &mut Vec<String>, meta: &ObjectMeta) {
 }
 
 fn service_section_spec(lines: &mut Vec<String>, svc: &Service) {
-    section(lines, "Spec");
+    section(lines, "Spec", true);
 
     let Some(spec) = &svc.spec else {
         field(lines, "Spec", "<none>");
@@ -666,6 +669,13 @@ fn service_section_spec(lines: &mut Vec<String>, svc: &Service) {
 
     service_section_ports(lines, spec);
     service_section_network(lines, spec, &svc.status);
+}
+
+fn bottom_section(lines: &mut Vec<String>) {
+    lines.push(String::new());
+    lines.push(String::new());
+    section(lines, "Navigational Tips", false);
+    lines.push("  Esc / q — close   ↑ ↓ PgDn PgUp Home End — navigate".into());
 }
 
 fn service_section_ports(lines: &mut Vec<String>, spec: &k8s_openapi::api::core::v1::ServiceSpec) {
@@ -760,7 +770,7 @@ pub async fn describe_service(client: &Client, name: &str, ns: Option<&str>) -> 
     section_identity(&mut lines, &svc.metadata);
     service_section_spec(&mut lines, &svc);
 
-    section(&mut lines, "Hints");
+    section(&mut lines, "Hints", true);
     lines.push(format!(
         "  kubectl describe service/{} -n {}",
         name,
@@ -772,8 +782,7 @@ pub async fn describe_service(client: &Client, name: &str, ns: Option<&str>) -> 
         ns.unwrap_or("default")
     ));
 
-    lines.push(String::new());
-    lines.push("  Esc / q — close   ↑ ↓ PgDn PgUp Home End — navigate".into());
+    bottom_section(&mut lines);
 
     lines
 }
@@ -799,7 +808,7 @@ pub async fn describe_replicaset(client: &Client, name: &str, ns: Option<&str>) 
 
     section_identity(&mut lines, &meta);
 
-    section(&mut lines, "Replicas");
+    section(&mut lines, "Replicas", true);
     field(
         &mut lines,
         "Desired",
@@ -827,7 +836,7 @@ pub async fn describe_replicaset(client: &Client, name: &str, ns: Option<&str>) 
             .to_string(),
     );
 
-    section(&mut lines, "Pod Template");
+    section(&mut lines, "Pod Template", true);
     if let Some(s) = spec {
         multiline_labels(
             &mut lines,
@@ -849,14 +858,13 @@ pub async fn describe_replicaset(client: &Client, name: &str, ns: Option<&str>) 
         }
     }
 
-    section(&mut lines, "Hints");
+    section(&mut lines, "Hints", true);
     lines.push(format!(
         "  kubectl describe replicaset/{} -n {}",
         name,
         ns.unwrap_or("default")
     ));
-    lines.push("".into());
-    lines.push("  Esc / q — close   ↑ ↓ — scroll".into());
+    bottom_section(&mut lines);
     lines
 }
 
@@ -881,7 +889,7 @@ pub async fn describe_daemonset(client: &Client, name: &str, ns: Option<&str>) -
 
     section_identity(&mut lines, &meta);
 
-    section(&mut lines, "Status");
+    section(&mut lines, "Status", true);
     field(
         &mut lines,
         "Desired",
@@ -920,7 +928,7 @@ pub async fn describe_daemonset(client: &Client, name: &str, ns: Option<&str>) -
             .to_string(),
     );
 
-    section(&mut lines, "Pod Template");
+    section(&mut lines, "Pod Template", true);
     if let Some(s) = spec {
         if let Some(pod_spec) = &s.template.spec {
             for c in &pod_spec.containers {
@@ -939,14 +947,13 @@ pub async fn describe_daemonset(client: &Client, name: &str, ns: Option<&str>) -
         }
     }
 
-    section(&mut lines, "Hints");
+    section(&mut lines, "Hints", true);
     lines.push(format!(
         "  kubectl describe daemonset/{} -n {}",
         name,
         ns.unwrap_or("default")
     ));
-    lines.push("".into());
-    lines.push("  Esc / q — close   ↑ ↓ — scroll".into());
+    bottom_section(&mut lines);
     lines
 }
 
@@ -971,7 +978,7 @@ pub async fn describe_job(client: &Client, name: &str, ns: Option<&str>) -> Vec<
 
     section_identity(&mut lines, &meta);
 
-    section(&mut lines, "Spec");
+    section(&mut lines, "Spec", true);
     field(
         &mut lines,
         "Completions",
@@ -988,7 +995,7 @@ pub async fn describe_job(client: &Client, name: &str, ns: Option<&str>) -> Vec<
         &spec.and_then(|s| s.backoff_limit).unwrap_or(6).to_string(),
     );
 
-    section(&mut lines, "Status");
+    section(&mut lines, "Status", true);
     field(
         &mut lines,
         "Active",
@@ -1021,7 +1028,7 @@ pub async fn describe_job(client: &Client, name: &str, ns: Option<&str>) -> Vec<
             .unwrap_or_else(|| "<none>".into()),
     );
 
-    section(&mut lines, "Conditions");
+    section(&mut lines, "Conditions", true);
     if let Some(conds) = status.and_then(|s| s.conditions.as_ref()) {
         lines.push(format!("  {:<20}  {:<8}  {}", "Type", "Status", "Message"));
         lines.push(format!("  {:<20}  {:<8}  {}", "────", "──────", "───────"));
@@ -1035,13 +1042,12 @@ pub async fn describe_job(client: &Client, name: &str, ns: Option<&str>) -> Vec<
         }
     }
 
-    section(&mut lines, "Hints");
+    section(&mut lines, "Hints", true);
     lines.push(format!(
         "  kubectl describe job/{} -n {}",
         name,
         ns.unwrap_or("default")
     ));
-    lines.push("".into());
-    lines.push("  Esc / q — close   ↑ ↓ — scroll".into());
+    bottom_section(&mut lines);
     lines
 }
