@@ -24,7 +24,10 @@ use std::{collections::BTreeMap, io, time::Duration, time::Instant};
 mod resources;
 use crate::resources::{fetch_cluster_resources, fetch_resources, ResourceRow};
 
-const APP_HEADER_TITLE: &str = "K7s Kubernetes Resources Viewer by @bieli";
+const APP_HEADER_TITLE: &str = concat!(
+    "Kubernetes Resources Viewer by @bieli v",
+    env!("CARGO_PKG_VERSION")
+);
 const APP_HEADER_TITLE_LEFT: &str = "--- [ ";
 const APP_HEADER_TITLE_RIGHT: &str = " ] ---";
 const APP_HEADER_TITLE_K8S_VER: &str = "| K8s API: v";
@@ -1464,6 +1467,12 @@ fn ui_header(f: &mut Frame, area: Rect, app: &App) {
             Style::default()
                 .add_modifier(Modifier::BOLD)
                 .fg(Color::Cyan),
+        ),
+        Span::styled(
+            format!("{}", env!("CARGO_PKG_NAME")),
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::White),
         ),
         Span::styled(
             format!(" {} ", APP_HEADER_TITLE),

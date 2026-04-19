@@ -1,6 +1,6 @@
 [package]
 name = "k7s"
-version = "0.4.7"
+version = "0.4.8"
 edition = "2021"
 authors = ["Marcin Bielak <marcin.bieli+k7sgithub@gmail.com>"]
 description = "Great terminal UI for kubernetes."
