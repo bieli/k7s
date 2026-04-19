@@ -149,100 +149,107 @@ fn deployment_section_spec(
     );
 }
 
-fn deployment_container_lines(lines: &mut Vec<String>, c: &k8s_openapi::api::core::v1::Container) {
-    lines.push(format!("  Container: {}", c.name));
-    field(lines, "    Image", c.image.as_deref().unwrap_or("<none>"));
-
-    let ports = c
-        .ports
+fn format_container_ports(c: &k8s_openapi::api::core::v1::Container) -> String {
+    c.ports
         .as_ref()
         .map(|ps| {
             ps.iter()
                 .map(|p| {
                     let proto = p.protocol.as_deref().unwrap_or("TCP");
-                    match p.name.as_deref() {
-                        Some(n) => format!("{}/{} ({})", p.container_port, proto, n),
-                        None => format!("{}/{}", p.container_port, proto),
-                    }
+                    p.name
+                        .as_deref()
+                        .map(|n| format!("{}/{} ({})", p.container_port, proto, n))
+                        .unwrap_or_else(|| format!("{}/{}", p.container_port, proto))
                 })
                 .collect::<Vec<_>>()
                 .join(", ")
         })
-        .unwrap_or_else(|| "<none>".into());
-    field(lines, "    Ports", &ports);
+        .unwrap_or_else(|| "<none>".into())
+}
 
-    if let Some(args) = &c.args {
-        if let Some((first, rest)) = args.split_first() {
-            field(lines, "    Args", first);
+fn push_multiline(lines: &mut Vec<String>, label: &str, entries: &[String]) {
+    match entries.split_first() {
+        None => field(lines, label, "<none>"),
+        Some((first, rest)) => {
+            field(lines, label, first);
             rest.iter()
-                .for_each(|a| lines.push(format!("  {:<28}  {}", "", a)));
+                .for_each(|e| lines.push(format!("  {:<28}  {}", "", e)));
         }
     }
+}
 
-    let env_entries: Vec<_> = c
-        .env
+fn container_args(c: &k8s_openapi::api::core::v1::Container) -> Vec<String> {
+    c.args.as_deref().unwrap_or(&[]).to_vec()
+}
+
+fn container_env_entries(c: &k8s_openapi::api::core::v1::Container) -> Vec<String> {
+    c.env
         .as_deref()
         .unwrap_or(&[])
         .iter()
         .map(|ev| format!("{}: {}", ev.name, env_var_value(ev)))
+        .collect()
+}
+
+fn format_resource_map(
+    map: &std::collections::BTreeMap<
+        String,
+        k8s_openapi::apimachinery::pkg::api::resource::Quantity,
+    >,
+) -> String {
+    map.iter()
+        .map(|(k, v)| format!("{}: {}", k, v.0))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+fn container_mounts(c: &k8s_openapi::api::core::v1::Container) -> String {
+    let ms: Vec<_> = c
+        .volume_mounts
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|m| {
+            format!(
+                "{}{}",
+                m.mount_path,
+                if m.read_only.unwrap_or(false) {
+                    " (ro)"
+                } else {
+                    ""
+                }
+            )
+        })
         .collect();
-    if env_entries.is_empty() {
-        field(lines, "    Env", "<none>");
-    } else if let Some((first, rest)) = env_entries.split_first() {
-        field(lines, "    Env", first);
-        rest.iter()
-            .for_each(|e| lines.push(format!("  {:<28}  {}", "", e)));
+    if ms.is_empty() {
+        "<none>".into()
+    } else {
+        ms.join(", ")
     }
+}
 
-    if let Some(res) = &c.resources {
-        if let Some(req) = &res.requests {
-            field(
-                lines,
-                "    Requests",
-                &req.iter()
-                    .map(|(k, v)| format!("{}: {}", k, v.0))
-                    .collect::<Vec<_>>()
-                    .join("  "),
-            );
-        }
-        if let Some(lim) = &res.limits {
-            field(
-                lines,
-                "    Limits",
-                &lim.iter()
-                    .map(|(k, v)| format!("{}: {}", k, v.0))
-                    .collect::<Vec<_>>()
-                    .join("  "),
-            );
-        }
-    }
+fn deployment_container_lines(lines: &mut Vec<String>, c: &k8s_openapi::api::core::v1::Container) {
+    lines.push(format!("  Container: {}", c.name));
+    field(lines, "    Image", c.image.as_deref().unwrap_or("<none>"));
+    field(lines, "    Ports", &format_container_ports(c));
 
-    if let Some(p) = &c.liveness_probe {
-        field(lines, "    Liveness", &probe_str(p));
-    }
-    if let Some(p) = &c.readiness_probe {
-        field(lines, "    Readiness", &probe_str(p));
-    }
+    push_multiline(lines, "    Args", &container_args(c));
+    push_multiline(lines, "    Env", &container_env_entries(c));
 
-    if let Some(mounts) = &c.volume_mounts {
-        let ms: Vec<_> = mounts
-            .iter()
-            .map(|m| {
-                format!(
-                    "{}{}",
-                    m.mount_path,
-                    if m.read_only.unwrap_or(false) {
-                        " (ro)"
-                    } else {
-                        ""
-                    }
-                )
-            })
-            .collect();
-        if !ms.is_empty() {
-            field(lines, "    Mounts", &ms.join(", "));
-        }
-    }
+    let res = c.resources.as_ref();
+    res.and_then(|r| r.requests.as_ref())
+        .map(|r| field(lines, "    Requests", &format_resource_map(r)));
+    res.and_then(|r| r.limits.as_ref())
+        .map(|l| field(lines, "    Limits", &format_resource_map(l)));
+
+    c.liveness_probe
+        .as_ref()
+        .map(|p| field(lines, "    Liveness", &probe_str(p)));
+    c.readiness_probe
+        .as_ref()
+        .map(|p| field(lines, "    Readiness", &probe_str(p)));
+
+    field(lines, "    Mounts", &container_mounts(c));
 }
 
 fn deployment_volume_lines(lines: &mut Vec<String>, vols: &[k8s_openapi::api::core::v1::Volume]) {
