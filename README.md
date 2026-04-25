@@ -266,3 +266,6 @@ Cluster
 - [ ] add bash script one liner to easy install binary for everyone
 - [ ] add releases with ready to use binaries for multiple hardware architectures of Linux/*NIX OS
 - [ ] listining Open Source community, what they want
+
+
+| tmp: https://github.com/bieli/k7s/releases/download/0.6.0/k7s-x86_64-unknown-freebsd.tar.gz
