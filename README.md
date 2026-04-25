@@ -110,6 +110,7 @@ Below architectures were testet on physical machines:
 | ARMv8-A / aarch64 / Cortex-A53  | musl | `k7s-aarch64-unknown-linux-musl` | Raspberry Pi 3 Model B Rev 1.2 |
 | Apple SIlicon M | apple | `k7s-aarch64-apple-darwin` | Apple M4 Max |
 | Intel(R) Core(TM) i5-2400S | apple | `k7s-x86_64-apple-darwin` | iMac from 2018 (MacOS ver. 10.13.6) |
+| Intel(R) Core(TM) i5 | FreeBSD 14.2-RELEASE | `k7s-x86_64-unknown-freebsd` | Intel CORE i5-7XXX |
 
 #### How to deploy and run `k7s` on your OS
 ```bash
@@ -266,6 +267,3 @@ Cluster
 - [ ] add bash script one liner to easy install binary for everyone
 - [ ] add releases with ready to use binaries for multiple hardware architectures of Linux/*NIX OS
 - [ ] listining Open Source community, what they want
-
-
-| tmp: https://github.com/bieli/k7s/releases/download/0.6.0/k7s-x86_64-unknown-freebsd.tar.gz
