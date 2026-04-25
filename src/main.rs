@@ -6,7 +6,9 @@ use crossterm::{
 };
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet};
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{Namespace, Pod, Service};
+use k8s_openapi::api::core::v1::{
+    Namespace, PersistentVolume, PersistentVolumeClaim, Pod, Service,
+};
 use kube::Client;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -17,8 +19,8 @@ use crate::resources::{fetch_cluster_resources, fetch_resources};
 
 mod describe_resources;
 use crate::describe_resources::{
-    describe_daemonset, describe_deployment, describe_job, describe_pod, describe_replicaset,
-    describe_service,
+    describe_daemonset, describe_deployment, describe_job, describe_pod, describe_pv, describe_pvc,
+    describe_replicaset, describe_service,
 };
 
 mod app;
@@ -39,6 +41,8 @@ async fn fetch_describe_lines(
         Pane::ReplicaSets => describe_replicaset(client, name, ns).await,
         Pane::DaemonSets => describe_daemonset(client, name, ns).await,
         Pane::Jobs => describe_job(client, name, ns).await,
+        Pane::Pv => describe_pv(client, name).await,
+        Pane::Pvc => describe_pvc(client, name, ns).await,
     }
 }
 
@@ -154,6 +158,10 @@ async fn tick_refresh(app: &mut App, client: &Client) {
         fetch_resources::<ReplicaSet>(client, &ns).await;
     *app.rows.get_mut(&Pane::DaemonSets).unwrap() = fetch_resources::<DaemonSet>(client, &ns).await;
     *app.rows.get_mut(&Pane::Jobs).unwrap() = fetch_resources::<Job>(client, &ns).await;
+    *app.rows.get_mut(&Pane::Pv).unwrap() =
+        fetch_cluster_resources::<PersistentVolume>(client).await;
+    *app.rows.get_mut(&Pane::Pvc).unwrap() =
+        fetch_resources::<PersistentVolumeClaim>(client, &ns).await;
 }
 
 #[tokio::main]

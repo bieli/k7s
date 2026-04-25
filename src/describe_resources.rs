@@ -1,11 +1,11 @@
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet};
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{
-    ContainerState, ContainerStatus, Pod, PodSpec, PodStatus, Service,
+    ContainerState, ContainerStatus, PersistentVolume, PersistentVolumeClaim, Pod, PodSpec,
+    PodStatus, Service,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-use kube::Api;
-use kube::Client;
+use kube::{Api, Client};
 use std::collections::BTreeMap;
 
 fn opt_str(v: &Option<String>) -> &str {
@@ -1049,5 +1049,268 @@ pub async fn describe_job(client: &Client, name: &str, ns: Option<&str>) -> Vec<
         ns.unwrap_or("default")
     ));
     bottom_section(&mut lines);
+    lines
+}
+
+pub async fn describe_pv(client: &Client, name: &str) -> Vec<String> {
+    let api: Api<PersistentVolume> = Api::all(client.clone());
+    let mut lines = Vec::new();
+
+    let pv = match api.get(name).await {
+        Ok(pv) => pv,
+        Err(e) => {
+            lines.push(format!(
+                "  Error fetching PersistentVolume '{}': {}",
+                name, e
+            ));
+            return lines;
+        }
+    };
+
+    let meta = &pv.metadata;
+    let spec = pv.spec.as_ref();
+    let status = pv.status.as_ref();
+
+    section_identity(&mut lines, meta);
+
+    section(&mut lines, "Spec", true);
+
+    field(
+        &mut lines,
+        "Capacity",
+        &spec
+            .and_then(|s| s.capacity.as_ref())
+            .and_then(|c| c.get("storage"))
+            .map(|q| q.0.clone())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+
+    field(
+        &mut lines,
+        "Access Modes",
+        &spec
+            .and_then(|s| s.access_modes.as_ref())
+            .map(|m| m.join(", "))
+            .unwrap_or_else(|| "<none>".into()),
+    );
+
+    field(
+        &mut lines,
+        "Reclaim Policy",
+        spec.and_then(|s| s.persistent_volume_reclaim_policy.as_deref())
+            .unwrap_or("<none>"),
+    );
+
+    field(
+        &mut lines,
+        "Storage Class",
+        spec.and_then(|s| s.storage_class_name.as_deref())
+            .unwrap_or("<none>"),
+    );
+
+    field(
+        &mut lines,
+        "Volume Mode",
+        spec.and_then(|s| s.volume_mode.as_deref())
+            .unwrap_or("<none>"),
+    );
+
+    if let Some(claim) = spec.and_then(|s| s.claim_ref.as_ref()) {
+        field(
+            &mut lines,
+            "Claim",
+            &format!(
+                "{}/{}",
+                claim.namespace.as_deref().unwrap_or("?"),
+                claim.name.as_deref().unwrap_or("?")
+            ),
+        );
+    }
+
+    if let Some(s) = spec {
+        if let Some(host) = &s.host_path {
+            field(&mut lines, "Source", &format!("HostPath: {}", host.path));
+        } else if let Some(nfs) = &s.nfs {
+            field(
+                &mut lines,
+                "Source",
+                &format!("NFS: {}:{}", nfs.server, nfs.path),
+            );
+        } else if let Some(aws) = &s.aws_elastic_block_store {
+            field(&mut lines, "Source", &format!("AWS EBS: {}", aws.volume_id));
+        } else if let Some(csi) = &s.csi {
+            field(
+                &mut lines,
+                "Source",
+                &format!("CSI: {} ({})", csi.driver, csi.volume_handle),
+            );
+        } else {
+            field(&mut lines, "Source", "<unknown>");
+        }
+    }
+
+    section(&mut lines, "Status", true);
+
+    field(
+        &mut lines,
+        "Phase",
+        status.and_then(|s| s.phase.as_deref()).unwrap_or("<none>"),
+    );
+
+    section(&mut lines, "Status", true);
+
+    field(
+        &mut lines,
+        "Phase",
+        status.and_then(|s| s.phase.as_deref()).unwrap_or("<none>"),
+    );
+
+    field(
+        &mut lines,
+        "Reason",
+        status.and_then(|s| s.reason.as_deref()).unwrap_or("<none>"),
+    );
+
+    field(
+        &mut lines,
+        "Message",
+        status
+            .and_then(|s| s.message.as_deref())
+            .unwrap_or("<none>"),
+    );
+
+    field(
+        &mut lines,
+        "Last Transition",
+        &status
+            .and_then(|s| s.last_phase_transition_time.as_ref())
+            .map(|t| t.0.to_rfc2822())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+
+    section(&mut lines, "Hints", true);
+
+    lines.push(format!("  kubectl describe pv/{}", name));
+    lines.push(format!("  kubectl get pv/{} -o yaml", name));
+
+    bottom_section(&mut lines);
+
+    lines
+}
+
+pub async fn describe_pvc(client: &Client, name: &str, ns: Option<&str>) -> Vec<String> {
+    let api: Api<PersistentVolumeClaim> = match ns {
+        Some(n) => Api::namespaced(client.clone(), n),
+        None => Api::all(client.clone()),
+    };
+
+    let mut lines = Vec::new();
+
+    let pvc = match api.get(name).await {
+        Ok(pvc) => pvc,
+        Err(e) => {
+            lines.push(format!("  Error fetching PVC '{}': {}", name, e));
+            return lines;
+        }
+    };
+
+    let meta = &pvc.metadata;
+    let spec = pvc.spec.as_ref();
+    let status = pvc.status.as_ref();
+
+    section_identity(&mut lines, meta);
+
+    section(&mut lines, "Spec", true);
+
+    field(
+        &mut lines,
+        "Volume",
+        &spec
+            .and_then(|s| s.volume_name.clone())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+
+    field(
+        &mut lines,
+        "StorageClass",
+        &spec
+            .and_then(|s| s.storage_class_name.clone())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+
+    field(
+        &mut lines,
+        "AccessModes",
+        &spec
+            .and_then(|s| s.access_modes.clone())
+            .map(|m| m.join(", "))
+            .unwrap_or_else(|| "<none>".into()),
+    );
+
+    field(
+        &mut lines,
+        "Requested Storage",
+        &spec
+            .and_then(|s| s.resources.as_ref())
+            .and_then(|r| r.requests.as_ref())
+            .and_then(|req| req.get("storage"))
+            .map(|q| q.0.to_string())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+
+    section(&mut lines, "Status", true);
+
+    field(
+        &mut lines,
+        "Phase",
+        &status
+            .and_then(|s| s.phase.clone())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+
+    field(
+        &mut lines,
+        "Capacity",
+        &status
+            .and_then(|s| s.capacity.as_ref())
+            .and_then(|c| c.get("storage"))
+            .map(|q| q.0.to_string())
+            .unwrap_or_else(|| "<none>".into()),
+    );
+
+    field(
+        &mut lines,
+        "AccessModes",
+        &status
+            .and_then(|s| s.access_modes.clone())
+            .map(|m| m.join(", "))
+            .unwrap_or_else(|| "<none>".into()),
+    );
+
+    field(
+        &mut lines,
+        "Conditions",
+        &status
+            .and_then(|s| s.conditions.as_ref())
+            .map(|conds| {
+                conds
+                    .iter()
+                    .map(|c| format!("{}={}", c.type_, c.status))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_else(|| "<none>".into()),
+    );
+
+    section(&mut lines, "Hints", true);
+
+    lines.push(format!(
+        "  kubectl describe pvc/{} -n {}",
+        name,
+        ns.unwrap_or("default")
+    ));
+
+    bottom_section(&mut lines);
+
     lines
 }

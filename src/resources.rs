@@ -1,6 +1,8 @@
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet};
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{Namespace, Pod, Service};
+use k8s_openapi::api::core::v1::{
+    Namespace, PersistentVolume, PersistentVolumeClaim, Pod, Service,
+};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use k8s_openapi::{ClusterResourceScope, NamespaceResourceScope};
 use kube::{api::ListParams, Api, Client, Resource};
@@ -280,6 +282,87 @@ impl IntoResourceRow for Job {
             name,
             namespace,
             data: vec![completions, active, failed, age],
+        }
+    }
+}
+
+impl IntoResourceRow for PersistentVolume {
+    fn into_resource_row(self) -> ResourceRow {
+        let spec = self.spec.as_ref();
+        let status = self.status.as_ref();
+
+        let capacity = spec
+            .and_then(|s| s.capacity.as_ref())
+            .and_then(|c| c.get("storage"))
+            .map(|q| q.0.clone())
+            .unwrap_or_else(|| "-".into());
+
+        let access_modes = spec
+            .and_then(|s| s.access_modes.as_ref())
+            .map(|m| m.join(", "))
+            .unwrap_or_else(|| "-".into());
+
+        let reclaim = spec
+            .and_then(|s| s.persistent_volume_reclaim_policy.as_deref())
+            .unwrap_or("-")
+            .to_string();
+
+        let status_phase = status
+            .and_then(|s| s.phase.as_deref())
+            .unwrap_or("-")
+            .to_string();
+
+        let age = get_age(&self.metadata);
+        let name = self.metadata.name.unwrap_or_default();
+
+        ResourceRow {
+            name,
+            namespace: "".into(),
+            data: vec![capacity, access_modes, reclaim, status_phase, age],
+        }
+    }
+}
+
+impl IntoResourceRow for PersistentVolumeClaim {
+    fn into_resource_row(self) -> ResourceRow {
+        let spec = self.spec.as_ref();
+        let status = self.status.as_ref();
+
+        let phase = status
+            .and_then(|s| s.phase.as_deref())
+            .unwrap_or("-")
+            .to_string();
+
+        let volume = spec
+            .and_then(|s| s.volume_name.as_deref())
+            .unwrap_or("-")
+            .to_string();
+
+        let capacity = status
+            .and_then(|s| s.capacity.as_ref())
+            .and_then(|c| c.get("storage"))
+            .map(|q| q.0.clone())
+            .unwrap_or_else(|| "-".into());
+
+        let access_modes = status
+            .and_then(|s| s.access_modes.as_ref())
+            .map(|m| m.join(", "))
+            .unwrap_or_else(|| "-".into());
+
+        let storage_class = spec
+            .and_then(|s| s.storage_class_name.as_deref())
+            .unwrap_or("-")
+            .to_string();
+
+        let age = get_age(&self.metadata);
+
+        let namespace = self.metadata.namespace.clone().unwrap_or_default();
+        let name = self.metadata.name.unwrap_or_default();
+
+        ResourceRow {
+            name,
+            namespace,
+            data: vec![phase, volume, capacity, access_modes, storage_class, age],
         }
     }
 }

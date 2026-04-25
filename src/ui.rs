@@ -113,9 +113,10 @@ fn render_namespaces(ctx: &mut UiCtx, area: Rect) {
 
 fn render_panes(ctx: &mut UiCtx, area: Rect) {
     let rows = Layout::vertical([
-        Constraint::Percentage(33),
-        Constraint::Percentage(33),
-        Constraint::Percentage(34),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
     ])
     .split(area);
 

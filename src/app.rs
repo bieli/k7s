@@ -21,6 +21,8 @@ pub enum Pane {
     ReplicaSets,
     DaemonSets,
     Jobs,
+    Pv,
+    Pvc,
 }
 
 impl Pane {
@@ -32,6 +34,8 @@ impl Pane {
             Pane::ReplicaSets,
             Pane::DaemonSets,
             Pane::Jobs,
+            Pane::Pv,
+            Pane::Pvc,
         ]
     }
 }
@@ -44,6 +48,7 @@ pub struct PaneConfig {
 }
 
 pub const PANE_CONFIGS: &[PaneConfig] = &[
+    // ROW 1
     PaneConfig {
         pane: Pane::Pods,
         title: "Pods",
@@ -76,6 +81,7 @@ pub const PANE_CONFIGS: &[PaneConfig] = &[
             Constraint::Percentage(10),
         ],
     },
+    // ROW 2
     PaneConfig {
         pane: Pane::Deployments,
         title: "Deployments",
@@ -100,6 +106,7 @@ pub const PANE_CONFIGS: &[PaneConfig] = &[
             Constraint::Percentage(15),
         ],
     },
+    // ROW 3
     PaneConfig {
         pane: Pane::DaemonSets,
         title: "DaemonSets",
@@ -120,6 +127,47 @@ pub const PANE_CONFIGS: &[PaneConfig] = &[
             Constraint::Percentage(35),
             Constraint::Percentage(15),
             Constraint::Percentage(20),
+            Constraint::Percentage(15),
+            Constraint::Percentage(15),
+        ],
+    },
+    // ROW 4
+    PaneConfig {
+        pane: Pane::Pv,
+        title: "PersistentVolumes",
+        headers: &[
+            "NAME",
+            "CAPACITY",
+            "ACCESS MODES",
+            "RECLAIM",
+            "STATUS",
+            "AGE",
+        ],
+        constraints: &[
+            Constraint::Percentage(25),
+            Constraint::Percentage(10),
+            Constraint::Percentage(15),
+            Constraint::Percentage(15),
+            Constraint::Percentage(15),
+            Constraint::Percentage(20),
+        ],
+    },
+    PaneConfig {
+        pane: Pane::Pvc,
+        title: "PersistentVolumeClaims",
+        headers: &[
+            "NAME",
+            "STATUS",
+            "VOLUME",
+            "CAPACITY",
+            "ACCESS MODES",
+            "AGE",
+        ],
+        constraints: &[
+            Constraint::Percentage(25),
+            Constraint::Percentage(15),
+            Constraint::Percentage(20),
+            Constraint::Percentage(10),
             Constraint::Percentage(15),
             Constraint::Percentage(15),
         ],
